@@ -1,4 +1,6 @@
 /**
+ * 経緯と設計の判断は./README.mdにある。
+ *
  * Pure library that flags suppression directive comments.
  *
  * It scans real comments only, so string literals and Markdown prose may still

@@ -1,3 +1,4 @@
+// 既定から変えた設定の理由はdocs/lint-history.mdにある。
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
   "plugins": ["typescript", "unicorn", "oxc", "import", "promise", "node"],

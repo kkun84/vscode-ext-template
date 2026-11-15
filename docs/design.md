@@ -144,8 +144,9 @@ VS Codeの実行ファイルは、環境変数`VSCODE_EXECUTABLE`があればそ
 ## CI
 
 - LinuxとWindowsで、lint、型検査、テスト、ビルド、E2Eを動かす。有名な拡張の多くがこの2つを使っている。WindowsではNixが動かないので、Node.jsとpnpmを直接入れる。版は`package.json`の`engines.node`と`packageManager`から読む。Linuxでは`scripts/check-env.ts`が、Nixの入れたNode.jsとpnpmがこの2つと一致することを検査する。こうして、版を書く場所を`flake.lock`と`package.json`に限り、食い違えばCIで落とす
-- CodeQL、依存関係のレビュー、lockfileの検証を動かす
-- Actionsは、タグではなくコミットのハッシュで固定する
+- CodeQLと、プルリクエストで増える依存関係のレビューを動かす
+- Actionsは、タグではなくコミットのハッシュで固定する。リポジトリの設定（`.github/settings/`）でもハッシュでの固定を必須にする
+- 依存関係の更新はDependabotに任せる。npm、GitHub Actions、Nixのいずれも、公開から7日経つまで更新しない。Renovateは使わない。Dependabotは設定ファイルだけで動き、GitHubのアプリを入れる必要がないため
 - タグを付けると、`.vsix`を作ってGitHubのReleaseに添付する。Marketplaceには公開しない
 
 ## 採用しなかったもの
@@ -153,5 +154,6 @@ VS Codeの実行ファイルは、環境変数`VSCODE_EXECUTABLE`があればそ
 - Biome。型を使うlintが、TypeScript本体ではなく独自の型推論で動くため
 - `node --test`。Effectの層やTestClockを扱う仕組みが無いため
 - `@vscode/test-cli`とMocha。E2EはPlaywrightに一本化した
+- `gh actions-lock`。この雛形を作った環境では使えず、ハッシュでの固定とDependabotで足りるため
 - `@vscode/test-web`。web版の確認は、desktop版のVS Codeのweb版拡張ホストで行う
 - tsdown。型定義の生成など、ライブラリ向けの機能が中心のため

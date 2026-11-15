@@ -1,0 +1,38 @@
+# 依存関係の更新。
+#
+# どの種類も、公開から7日経つまでは更新のプルリクエストを作らない。
+# pnpmのminimumReleaseAge(7日)と同じ方針である。セキュリティの更新は待たない。
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      npm:
+        patterns: ["*"]
+    ignore:
+      # Node.jsの型はNode.js 24に合わせる。Node.jsを上げるときに一緒に上げる。
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+      # VS Codeの型は、最低の対応版(engines.vscode)を上げるときに一緒に上げる。
+      - dependency-name: "@types/vscode"
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  - package-ecosystem: nix
+    directory: "/"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7

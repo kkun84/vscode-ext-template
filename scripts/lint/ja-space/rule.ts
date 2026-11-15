@@ -1,4 +1,6 @@
 /**
+ * 経緯と設計の判断は./README.mdにある。
+ *
  * Japanese typography checker: never put a regular space (U+0020) between
  * Japanese text and an adjacent ASCII word. Spacing is the renderer's job.
  *
