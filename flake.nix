@@ -13,49 +13,36 @@
         "aarch64-darwin"
       ];
 
-      # vscodeはunfreeなので、この名前だけを許可する。E2E用のshellでしか使わない。
-      forAll =
-        f:
-        nixpkgs.lib.genAttrs systems (
-          system:
-          f (
-            import nixpkgs {
-              inherit system;
-              config.allowUnfreePredicate = pkg: nixpkgs.lib.getName pkg == "vscode";
-            }
-          )
-        );
+      forAll = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
 
-      # 素の開発環境とE2E用の環境で共通の道具立て。
-      basePackages =
-        pkgs:
-        [
-          pkgs.nodejs_24
-          pkgs.pnpm_12
-          pkgs.git
-          pkgs.shellcheck
-          pkgs.actionlint
-        ];
+      # 素の開発環境とE2E用の環境で共通の道具。
+      basePackages = pkgs: [
+        pkgs.nodejs_24
+        pkgs.pnpm_12
+        pkgs.git
+        pkgs.shellcheck
+        pkgs.actionlint
+      ];
     in
     {
       devShells = forAll (pkgs: {
-        default = pkgs.mkShellNoCC {
-          packages = basePackages pkgs;
-        };
+        default = pkgs.mkShellNoCC { packages = basePackages pkgs; };
 
-        # E2Eは本物のVS Codeを動かす。Linuxだけは画面の無い環境なのでxvfbを足す。
+        # E2Eは本物のエディタを動かす。LinuxではnixpkgsのVSCodiumを使う。
+        # VSCodiumはVS Codeと同じソースから作られ、拡張機能のAPIも同じ。
+        # VS Code本体と違ってunfreeでなく、Nixのバイナリキャッシュから入る。
+        # この版が最低の対応版でもある(package.jsonのengines.vscode)。
+        # Linux以外では環境変数を渡さず、E2Eが最新のVS Codeをダウンロードする。
         e2e = pkgs.mkShellNoCC {
           packages =
             basePackages pkgs
-            ++ [ pkgs.vscode ]
-            ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.xvfb-run ];
-
-          # E2EはVSCODE_EXECUTABLEのVS Codeを使う。macOSは.appの中の実行ファイルを指す。
-          env.VSCODE_EXECUTABLE =
-            if pkgs.stdenv.hostPlatform.isDarwin then
-              "${pkgs.vscode}/Applications/Visual Studio Code.app/Contents/MacOS/Code"
-            else
-              "${pkgs.vscode}/lib/vscode/code";
+            ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+              pkgs.vscodium
+              pkgs.xvfb-run
+            ];
+          env = pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+            VSCODE_EXECUTABLE = "${pkgs.vscodium}/lib/vscode/codium";
+          };
         };
       });
 

@@ -16,7 +16,7 @@ pre-commit:
       stage_fixed: true
     - name: ja-space
       glob: "**/*.{md,ts,tsx,js,yml,yaml,toml,nix,json,html}"
-      run: node scripts/lint-ja-space.ts --fix {staged_files}
+      run: node scripts/lint/ja-space/cli.ts --fix {staged_files}
       stage_fixed: true
 
 pre-push:

@@ -6,7 +6,7 @@ import { listFiles, PackageManager } from "@vscode/vsce"
 const allowed = (file: string): boolean =>
   [
     "dist/node/extension.js",
-    "dist/web/extension.js",
+    "dist/web/extension.cjs",
     "package.json",
     "package.nls.json",
     "package.nls.ja.json",

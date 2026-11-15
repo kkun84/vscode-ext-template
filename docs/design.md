@@ -26,7 +26,8 @@ src/
     node/        desktop版の入口
     web/         web版の入口
 e2e/
-  driver/        E2Eだけで使う拡張。配布物には入れない
+  vscode.ts      エディタの起動と後片付け
+  fixtures.ts    テストに渡すフィクスチャ
   pages/         VS Codeの画面を操作するページオブジェクト
   *.spec.ts      E2Eのテスト
 scripts/         ビルド、パッケージ化、自作lint、初期化
@@ -86,11 +87,11 @@ entrypoints ──▶ layers ──▶ services ──▶ core
 rolldownを直接呼ぶ`scripts/build.ts`で、2つのバンドルを作る。
 
 - desktop版は`dist/node/extension.js`にESMで出力する。VS Code 1.100以降は、`"type": "module"`の拡張をESMとして読み込む
-- web版は`dist/web/extension.js`にCommonJSで出力する。web版の拡張ホストでのESMの扱いを確認できていないためである
+- web版は`dist/web/extension.cjs`にCommonJSで出力する。web版の拡張ホストはESMを読めない。`"type": "module"`のパッケージで拡張子を`.js`にすると、「ESM modules are not supported in the web worker extension host」で起動しない。E2Eで確かめた
 - `scripts/package.ts`が配布用の`.vsix`を作る。`scripts/check-vsix.ts`が、`.vsix`に`dist`の2ファイルと文言と説明書以外が入っていないことを検査する。E2Eのdriverが混入すると、この検査で落ちる
 - `budgets.json`に、バンドルの大きさの上限を書く
 
-最低のVS Codeは1.119とする。ESMの読み込みに1.100以降が要り、Node.js 24を同梱している必要がある。そのうえで、CIのLinuxのE2Eが使うnixpkgsのVS Codeが1.119なので、実際に確かめている版を最低の版にした。`@types/vscode`は、最低の版を超えない最新の1.118に固定する。
+最低のVS Codeは1.116とする。ESMの読み込みに1.100以降が要り、Node.js 24を同梱している必要がある。そのうえで、CIのLinuxのE2Eが使うnixpkgsのVSCodiumが1.116なので、実際に確かめている版を最低の版にした。`@types/vscode`も1.116に固定し、それより新しいAPIを型の段階で使えなくする。
 
 ## テスト
 
@@ -106,7 +107,8 @@ rolldownを直接呼ぶ`scripts/build.ts`で、2つのバンドルを作る。
 
 - 操作は画面から行う。コマンドパレット、入力欄、クリックを使う
 - 合否は画面に出たもので決める。拡張が保存したファイルのように、利用者が後で開けば見られる結果は、直接読んでよい
-- `e2e/driver`は、テストの準備と後片付けのためだけに、VS Code APIを外から呼べるようにする拡張である。テスト本体からは使わせない。driverを使えるのは`e2e/fixtures.ts`の準備用のフィクスチャだけで、fallowの境界検査で守る
+- 準備は、起動前に書くファイルで行う。ユーザー設定は`settings.json`に、開くファイルは一時的なワークスペースに書く。テストは`settings`、`files`、`openFolder`のオプションで指定する
+- 起動後にVS Code APIで準備したいテストが出てきたら、テスト専用の拡張(driver)を`e2e/driver`に足す。driverを使えるのは準備用のフィクスチャだけにし、テスト本体から使えないことをfallowの境界検査で守る。いまの見本のテストには要らないので、雛形には入れていない
 - 内部のデータで合否を決めたいテストは、E2Eではなく結合テストに書く
 - 起動のたびに一時的なユーザーデータを作る。パスは短くする。macOSではソケットのパスが約103文字までのためである
 - `ELECTRON_RUN_AS_NODE`を外してから起動する。他のツールがこれを設定していると、VS CodeがNode.jsとして起動してしまう
@@ -116,7 +118,7 @@ rolldownを直接呼ぶ`scripts/build.ts`で、2つのバンドルを作る。
 
 VS Codeの実行ファイルは、環境変数`VSCODE_EXECUTABLE`があればそれを使い、無ければ`@vscode/test-electron`で最新の安定版をダウンロードする。
 
-- Linuxでは、Nixの`e2e`シェルが`VSCODE_EXECUTABLE`にnixpkgsのVS Codeを渡す。これは最低の版でもある
+- Linuxでは、Nixの`e2e`シェルが`VSCODE_EXECUTABLE`にnixpkgsのVSCodiumを渡す。VSCodiumはVS Codeと同じソースから作られ、拡張機能のAPIも同じである。VS Code本体はunfreeで、nixpkgsのバイナリキャッシュに無く、ビルドの度にMicrosoftのサーバーから取得する必要があるので使わない。この版は最低の版でもある
 - Windowsでは、最新の安定版をダウンロードする
 - こうすると、CI全体で最低の版と最新の版の両方を確かめられる
 - Playwrightは`_electron`でVS Codeを起動するだけで、ブラウザは使わない。そのためPlaywrightのブラウザのダウンロードは要らず、`@playwright/test`の版をnixpkgsに合わせる必要もない

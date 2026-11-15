@@ -15,7 +15,7 @@
   "publisher": "kkun84",
   "type": "module",
   "main": "./dist/node/extension.js",
-  "browser": "./dist/web/extension.js",
+  "browser": "./dist/web/extension.cjs",
   "scripts": {
     "typecheck": "node scripts/typecheck.ts",
     "lint": "oxlint --type-aware --deny-warnings && oxfmt --check && fallow --fail-on-issues && rumdl check . && node scripts/lint/ja-space/cli.ts && node scripts/lint/no-suppress/cli.ts && node scripts/lint/pnpm-policy/cli.ts",
@@ -39,7 +39,7 @@
     "@effect/vitest": "4.1.2",
     "@playwright/test": "1.65.0",
     "@types/node": "24.19.2",
-    "@types/vscode": "1.118.0",
+    "@types/vscode": "1.116.0",
     "@vitest/coverage-v8": "5.1.0",
     "@vscode/test-electron": "3.1.0",
     "@vscode/vsce": "4.1.0",
@@ -83,7 +83,7 @@
   "engines": {
     "node": "24.22.1",
     "pnpm": "12.9.0",
-    "vscode": "^1.119.0"
+    "vscode": "^1.116.0"
   },
   "packageManager": "pnpm@12.9.0"
 }

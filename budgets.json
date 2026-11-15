@@ -1,6 +1,6 @@
 {
   "size": {
     "dist/node/extension.js": 170000,
-    "dist/web/extension.js": 170000
+    "dist/web/extension.cjs": 170000
   }
 }

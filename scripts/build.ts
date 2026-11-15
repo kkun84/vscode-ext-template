@@ -1,7 +1,8 @@
 // desktop版とweb版の2つのバンドルを作る。
 //
 // desktop版はESMにする。VS Code 1.100以降は"type": "module"の拡張をESMとして読み込む。
-// web版はCommonJSのままにする。web版の拡張ホストでESMが使えることを確かめていないため。
+// web版はCommonJSにし、拡張子を.cjsにする。web版の拡張ホストはESMを読めず、
+// "type": "module"のパッケージで.jsにすると「ESM modules are not supported」で起動しない。
 import { mkdir, rm, writeFile } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
 import { rolldown } from "rolldown"
@@ -15,7 +16,7 @@ interface Target {
 
 const targets: ReadonlyArray<Target> = [
   { input: "src/entrypoints/node/extension.ts", output: "dist/node/extension.js", platform: "node", format: "esm" },
-  { input: "src/entrypoints/web/extension.ts", output: "dist/web/extension.js", platform: "browser", format: "cjs" }
+  { input: "src/entrypoints/web/extension.ts", output: "dist/web/extension.cjs", platform: "browser", format: "cjs" }
 ]
 
 const path = (relative: string): string => fileURLToPath(new URL(`../${relative}`, import.meta.url))

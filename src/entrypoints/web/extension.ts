@@ -1,5 +1,5 @@
 /**
- * web版の入口。`dist/web/extension.js`としてCommonJSで出力する。
+ * web版の入口。`dist/web/extension.cjs`としてCommonJSで出力する。
  */
 import type * as vscode from "vscode"
 import { userNameLayer } from "../../layers/web/user-name.ts"
