@@ -71,7 +71,7 @@ jobs:
           if-no-files-found: ignore
 
   windows:
-    name: test (Windows)
+    name: check (Windows)
     runs-on: windows-2025
     timeout-minutes: 30
     permissions:
@@ -88,10 +88,8 @@ jobs:
           cache: pnpm
       - name: Install
         run: pnpm install --frozen-lockfile
-      - name: Type check and test
-        run: |
-          pnpm typecheck
-          pnpm test
+      - name: Check
+        run: pnpm check
       - name: E2E with the latest stable VS Code
         run: pnpm test:e2e
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

@@ -37,7 +37,7 @@
         "required_status_checks": [
           { "context": "check (Linux)" },
           { "context": "e2e (Linux)" },
-          { "context": "test (Windows)" },
+          { "context": "check (Windows)" },
           { "context": "nix" },
           { "context": "Analyze (actions)" },
           { "context": "Analyze (javascript-typescript)" },
