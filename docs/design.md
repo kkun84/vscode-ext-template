@@ -143,7 +143,7 @@ VS Codeの実行ファイルは、環境変数`VSCODE_EXECUTABLE`があればそ
 
 ## CI
 
-- LinuxとWindowsで、lint、型検査、テスト、ビルド、E2Eを動かす。有名な拡張の多くがこの2つを使っている。WindowsではNixが動かないので、Node.jsとpnpmを直接入れる。版は`package.json`の`engines.node`と`packageManager`から読む。Linuxでは`scripts/check-env.ts`が、Nixの入れたNode.jsとpnpmがこの2つと一致することを検査する。こうして、版を書く場所を`flake.lock`と`package.json`に限り、食い違えばCIで落とす
+- LinuxとWindowsで、lint、型検査、テスト、ビルド、E2Eを動かす。有名な拡張の多くがこの2つを使っている。WindowsではNixが動かないので、Node.jsとpnpmを直接入れる。版は`.node-version`と`package.json`の`packageManager`から読む。`engines.node`は`^24.22.1`の範囲にする。完全に固定すると、Node.jsを自前で用意するDependabotがインストールで止まるため。Linuxでは`scripts/check-env.ts`が、Nixの入れたNode.jsとpnpmがこの2つと一致することを検査する。こうして、版を書く場所を`flake.lock`、`.node-version`、`package.json`に限り、食い違えばCIで落とす
 - CodeQLと、プルリクエストで増える依存関係のレビューを動かす
 - Actionsは、タグではなくコミットのハッシュで固定する。リポジトリの設定（`.github/settings/`）でもハッシュでの固定を必須にする
 - 依存関係の更新はDependabotに任せる。npm、GitHub Actions、Nixのいずれも、公開から7日経つまで更新しない。Renovateは使わない。Dependabotは設定ファイルだけで動き、GitHubのアプリを入れる必要がないため

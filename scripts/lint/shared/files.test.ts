@@ -1,11 +1,12 @@
 import { symlinkSync } from "node:fs"
-import { join, relative } from "node:path"
+import { join, relative, sep } from "node:path"
 import { describe, expect, it } from "vitest"
 import { isLockfileName, listFiles, report } from "./files.ts"
 import { useTempDir } from "./temp-dir.ts"
 
 const dir = useTempDir("lint-files-")
-const names = (files: ReadonlyArray<string>): ReadonlyArray<string> => files.map((file) => relative(dir.root(), file)).toSorted()
+const names = (files: ReadonlyArray<string>): ReadonlyArray<string> =>
+  files.map((file) => relative(dir.root(), file).replaceAll(sep, "/")).toSorted()
 
 describe("isLockfileName", () => {
   it("ロックファイルを見分ける", () => {

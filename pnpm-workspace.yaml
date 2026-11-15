@@ -31,3 +31,10 @@ allowBuilds:
   # packaging, and this template never signs .vsix files or publishes to the
   # Marketplace. Pinned to false so pnpm stops reporting it as an ignored build.
   "@vscode/vsce-sign": false
+
+# 6. @vscode/vsce 4.1.0 depends on minimatch ^10, which has GHSA-g3hv-75wg-m249
+#    (moderate). The fix exists only in minimatch 11, and vsce calls only the
+#    unchanged `minimatch(path, pattern, options)` API. Remove this override
+#    once vsce itself depends on a fixed minimatch.
+overrides:
+  "@vscode/vsce>minimatch": 11.0.4

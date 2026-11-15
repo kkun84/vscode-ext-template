@@ -46,7 +46,7 @@ pnpm test:e2e        # E2E。LinuxではNixの`.#e2e`シェルの中でxvfb-run 
 pnpm package         # .vsixを作る
 ```
 
-Nixを使わない場合は、`package.json`の`engines`にある版のNode.jsとpnpmを入れます。
+Nixを使わない場合は、`.node-version`の版のNode.jsと、`package.json`の`packageManager`の版のpnpmを入れます。
 
 ## Web版をやめるとき
 

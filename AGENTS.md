@@ -4,7 +4,7 @@ Effect v4で書くVS Code拡張機能の雛形です。設計は[docs/design.md]
 
 ## 環境
 
-- Node.jsとpnpmの版は`package.json`の`engines`に固定しています。Nixがあれば`nix develop`で揃います。
+- Node.jsの版は`.node-version`に、pnpmの版は`package.json`の`packageManager`に固定しています。Nixがあれば`nix develop`で揃います。
 - 版が合っているかは`pnpm check-env`で確かめます。
 
 ## 完了の条件
