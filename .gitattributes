@@ -1,0 +1,2 @@
+# 改行はどのOSでもLFにする。oxfmtはLFを前提に検査するため、WindowsでCRLFに変わると全ファイルが違反になる。
+* text=auto eol=lf
