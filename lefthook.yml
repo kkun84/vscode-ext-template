@@ -1,0 +1,25 @@
+# lefthookの設定(https://lefthook.dev/configuration/)。
+#
+# pre-commitは変更したファイルだけを整えてstageし直す。全体の検査はpre-pushで1回だけ動かす。
+
+pre-commit:
+  # 3つのjobが同じファイルを書き換えるので、直列に動かす。
+  piped: true
+  jobs:
+    - name: format
+      glob: "**/*.{ts,json,jsonc,md,yml,yaml,html,css}"
+      run: pnpm -s exec oxfmt --no-error-on-unmatched-pattern {staged_files}
+      stage_fixed: true
+    - name: markdown
+      glob: "**/*.md"
+      run: pnpm -s exec rumdl check --fix {staged_files}
+      stage_fixed: true
+    - name: ja-space
+      glob: "**/*.{md,ts,tsx,js,yml,yaml,toml,nix,json,html}"
+      run: node scripts/lint-ja-space.ts --fix {staged_files}
+      stage_fixed: true
+
+pre-push:
+  jobs:
+    - name: check
+      run: pnpm check

@@ -1,0 +1,10 @@
+{
+  "Extension Template": "拡張機能の雛形",
+  "Note title": "ノートの題名",
+  "For example: Meeting notes": "例: 打ち合わせのメモ",
+  "Note created: {0}": "ノートを作成しました: {0}",
+  "Open a folder to create a note.": "ノートを作成するにはフォルダを開いてください。",
+  "Could not save the note.": "ノートを保存できませんでした。",
+  "Invalid arguments for this command.": "このコマンドの引数が正しくありません。",
+  "The command failed. See the log for details.": "コマンドが失敗しました。詳細はログを確認してください。"
+}

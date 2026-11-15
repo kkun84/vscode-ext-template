@@ -1,0 +1,155 @@
+# 設計
+
+この雛形の構成と、その構成にした理由を書く。
+
+## 目的
+
+Effect v4で書くVS Code拡張機能の雛形にする。特定の拡張機能に固有の仕組みは入れない。
+
+- desktop版とweb版の両方で動く形を標準にする。web版をやめる時は、入口とビルドを1つ消すだけで済むようにする
+- テストからモックライブラリを無くす。VS Codeとの境界はEffectの層で差し替える
+- 規約は文書だけでなく、lint、型、fallowの境界検査で機械的に守らせる
+
+## ディレクトリ
+
+```text
+src/
+  core/          純粋な計算。effectのほかに依存しない
+  services/      Context.Serviceの定義と、それを組み合わせる手順
+  layers/
+    vscode/      VS Code APIで書いたLive実装。desktop版とweb版の両方で動く
+    node/        Node.jsの組み込みモジュールを使うLive実装。desktop版だけで使う
+    web/         web版で、node/の代わりに渡す実装
+    test/        インメモリのTest実装
+  entrypoints/
+    shared/      activateの共通部分。実行環境の組み立て、コマンドの登録
+    node/        desktop版の入口
+    web/         web版の入口
+e2e/
+  driver/        E2Eだけで使う拡張。配布物には入れない
+  pages/         VS Codeの画面を操作するページオブジェクト
+  *.spec.ts      E2Eのテスト
+scripts/         ビルド、パッケージ化、自作lint、初期化
+l10n/            実行時の文言の翻訳
+```
+
+## 層の向き
+
+依存は次の向きにだけ流れる。fallowの`boundaries`と`architecture.rules.json`で検査する。
+
+```text
+entrypoints ──▶ layers ──▶ services ──▶ core
+```
+
+- `core`は`effect`だけに依存する。`vscode`、Node.jsの組み込みモジュール、時刻と乱数の取得を使わない。時刻は引数で受け取る
+- `services`は`core`と`effect`だけに依存する。`vscode`もNode.jsの組み込みモジュールも使わない
+- `layers/vscode`、`layers/web`、`layers/test`はNode.jsの組み込みモジュールを使わない
+- Node.jsの組み込みモジュールを使ってよいのは`layers/node`、`scripts`、`e2e`だけにする
+- `entrypoints/node`と`entrypoints/web`は互いに依存しない。`entrypoints/web`は`layers/node`に依存しない
+
+## EffectとVS Codeのつなぎ方
+
+`entrypoints/shared`が、`activate`の中で`ManagedRuntime`を作る。コマンドの処理はすべてこの実行環境の上で動かし、`deactivate`で`ManagedRuntime`を破棄する。破棄すると、層が`Effect.acquireRelease`で確保した出力チャネルなどの資源が逆順に解放される。
+
+- コマンドは、ID、引数のSchema、処理のEffectを1組にした定義で登録する。`vscode.commands.registerCommand`に渡す関数は、引数をSchemaでdecodeしてから処理のEffectを実行する
+- 処理が型付きのエラーで失敗したら、エラーの種類に応じた翻訳済みの文言を通知する。想定外の欠陥で失敗したら、詳細をログに残し、一般的な文言を通知する
+- ログはEffectの`Logger`を、VS Codeの`LogOutputChannel`へ流す
+- 時刻はEffectの`Clock`から取る。結合テストでは`TestClock`で固定できる
+
+## 境界での検証
+
+外から入る値は、使う前にすべてSchemaでdecodeする。
+
+- 設定値。不正な値は既定値に戻し、警告をログに残す
+- `globalState`などの保存データ
+- コマンドの引数。コマンドは他の拡張やキー割り当てからも任意の値で呼ばれる
+
+## 見本の機能
+
+雛形には、全部の層を通る最小のコマンドを1つだけ入れる。
+
+- コマンド「Create Note」は、題名を入力欄で尋ね、ワークスペースの`notes`フォルダにMarkdownのファイルを作り、エディタで開き、完了を通知する
+- 保存先のフォルダ名と、著者名は設定から読む
+- 著者名の設定が空の時、desktop版はOSのユーザー名を使い、web版は著者名を省く。Node.js専用の機能を`layers/node`に置き、web版では別の実装に差し替える見本にする
+- 題名からファイル名を作る処理と、本文を組み立てる処理は`core`に置く
+
+## 文言の翻訳
+
+英語と日本語を用意する。
+
+- package.jsonに書く文言は`package.nls.json`と`package.nls.ja.json`に置く
+- 実行時の文言は`vscode.l10n.t`で翻訳し、`l10n/bundle.l10n.ja.json`に置く
+- `core`と`services`は文言を持たない。何を伝えるかをタグ付きの値で返し、`layers/vscode`の実装が翻訳する
+
+## ビルド
+
+rolldownを直接呼ぶ`scripts/build.ts`で、2つのバンドルを作る。
+
+- desktop版は`dist/node/extension.js`にESMで出力する。VS Code 1.100以降は、`"type": "module"`の拡張をESMとして読み込む
+- web版は`dist/web/extension.js`にCommonJSで出力する。web版の拡張ホストでのESMの扱いを確認できていないためである
+- `scripts/package.ts`が配布用の`.vsix`を作る。`scripts/check-vsix.ts`が、`.vsix`に`dist`の2ファイルと文言と説明書以外が入っていないことを検査する。E2Eのdriverが混入すると、この検査で落ちる
+- `budgets.json`に、バンドルの大きさの上限を書く
+
+最低のVS Codeは1.119とする。ESMの読み込みに1.100以降が要り、Node.js 24を同梱している必要がある。そのうえで、CIのLinuxのE2Eが使うnixpkgsのVS Codeが1.119なので、実際に確かめている版を最低の版にした。`@types/vscode`は、最低の版を超えない最新の1.118に固定する。
+
+## テスト
+
+| 種類       | 対象                                        | VS Code  | ツール                   |
+| ---------- | ------------------------------------------- | -------- | ------------------------ |
+| 単体テスト | `core`の純関数                              | 使わない | Vitest                   |
+| 結合テスト | `services`の手順と`layers/test`の組み合わせ | Test層   | Vitestと`@effect/vitest` |
+| E2E        | ビルドした拡張を本物のVS Codeで動かす       | 本物     | Playwrightの`_electron`  |
+
+単体テストと結合テストは、どちらも1つのプロセスで完結するので、`pnpm test`でまとめて実行する。テストファイルは対象の隣に`*.test.ts`として置く。E2Eは`pnpm test:e2e`で分けて実行する。
+
+### E2Eの決まり
+
+- 操作は画面から行う。コマンドパレット、入力欄、クリックを使う
+- 合否は画面に出たもので決める。拡張が保存したファイルのように、利用者が後で開けば見られる結果は、直接読んでよい
+- `e2e/driver`は、テストの準備と後片付けのためだけに、VS Code APIを外から呼べるようにする拡張である。テスト本体からは使わせない。driverを使えるのは`e2e/fixtures.ts`の準備用のフィクスチャだけで、fallowの境界検査で守る
+- 内部のデータで合否を決めたいテストは、E2Eではなく結合テストに書く
+- 起動のたびに一時的なユーザーデータを作る。パスは短くする。macOSではソケットのパスが約103文字までのためである
+- `ELECTRON_RUN_AS_NODE`を外してから起動する。他のツールがこれを設定していると、VS CodeがNode.jsとして起動してしまう
+- 他の拡張は無効にする
+- ロケーターはroleとラベルで書き、VS Codeの画面の操作は`e2e/pages`にまとめる
+- web版は、desktop版のVS Codeに`--extensionDevelopmentKind=web`を渡し、web版の拡張ホストで動かして確かめる
+
+VS Codeの実行ファイルは、環境変数`VSCODE_EXECUTABLE`があればそれを使い、無ければ`@vscode/test-electron`で最新の安定版をダウンロードする。
+
+- Linuxでは、Nixの`e2e`シェルが`VSCODE_EXECUTABLE`にnixpkgsのVS Codeを渡す。これは最低の版でもある
+- Windowsでは、最新の安定版をダウンロードする
+- こうすると、CI全体で最低の版と最新の版の両方を確かめられる
+- Playwrightは`_electron`でVS Codeを起動するだけで、ブラウザは使わない。そのためPlaywrightのブラウザのダウンロードは要らず、`@playwright/test`の版をnixpkgsに合わせる必要もない
+
+## 静的な検査
+
+- oxlintで、型を使うルールも含めて検査する
+- oxfmtで整形する
+- fallowで、層の境界、禁止した呼び出し、未使用のコード、循環参照、重複を検査する
+- rumdlでMarkdownを検査する
+- 自作のlintを3つ持つ
+  - `ja-space`は、和文と英数字の間の半角空白を検出し、直す
+  - `no-suppress`は、lintや型検査を黙らせるコメントを禁止する
+  - `pnpm-policy`は、供給網対策のpnpmの設定が消えたり緩められたりしていないかを検査する
+
+## 開発環境
+
+- Nixのflakeが、Node.js 24、pnpm 12、shellcheck、actionlintを固定する。E2E用の`e2e`シェルは、VS Codeとxvfbも加える。nixpkgsは安定版のチャンネルにし、7日以上前のrevに固定する
+- `.envrc`に`use flake`を置く。direnvは補助で、無くても`nix develop`で同じ環境に入れる
+- pnpmは、公開から7日以上経った版だけを入れる。依存のインストールスクリプトは、`allowBuilds`で許可したものだけを動かす
+- lefthookで、pre-commitに変更したファイルの整形とlint、pre-pushに`pnpm check`を動かす
+
+## CI
+
+- LinuxとWindowsで、lint、型検査、テスト、ビルド、E2Eを動かす。有名な拡張の多くがこの2つを使っている。WindowsではNixが動かないので、Node.jsとpnpmを直接入れる。版は`package.json`の`engines.node`と`packageManager`から読む。Linuxでは`scripts/check-env.ts`が、Nixの入れたNode.jsとpnpmがこの2つと一致することを検査する。こうして、版を書く場所を`flake.lock`と`package.json`に限り、食い違えばCIで落とす
+- CodeQL、依存関係のレビュー、lockfileの検証を動かす
+- Actionsは、タグではなくコミットのハッシュで固定する
+- タグを付けると、`.vsix`を作ってGitHubのReleaseに添付する。Marketplaceには公開しない
+
+## 採用しなかったもの
+
+- Biome。型を使うlintが、TypeScript本体ではなく独自の型推論で動くため
+- `node --test`。Effectの層やTestClockを扱う仕組みが無いため
+- `@vscode/test-cli`とMocha。E2EはPlaywrightに一本化した
+- `@vscode/test-web`。web版の確認は、desktop版のVS Codeのweb版拡張ホストで行う
+- tsdown。型定義の生成など、ライブラリ向けの機能が中心のため

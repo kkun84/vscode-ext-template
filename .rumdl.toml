@@ -1,0 +1,17 @@
+# rumdlの設定(https://github.com/rvben/rumdl)。
+#
+# `flavor = "standard"`はGFMを含む。既定の規則はそのまま使い、このリポジトリに
+# 合わない規則だけを無効にする。
+#
+# - MD013(行の長さ):無効。日本語の文章では折り返しは表示側の仕事で、
+#   和文と英数字の間に空白を入れない規約と衝突するため。
+# - .ref/は読むだけの参考実装なので検査しない。
+
+[global]
+flavor = "standard"
+respect_gitignore = true
+exclude = ["node_modules", "dist", "out", "coverage", ".ref", ".vscode-test", "test-results"]
+
+[MD013]
+# 日本語の文章では行の長さは表示側の仕事。
+enabled = false

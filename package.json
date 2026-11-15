@@ -1,0 +1,89 @@
+{
+  "name": "vscode-ext-template",
+  "displayName": "%displayName%",
+  "version": "0.1.0",
+  "private": true,
+  "description": "%description%",
+  "categories": [
+    "Other"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kkun84/vscode-ext-template"
+  },
+  "publisher": "kkun84",
+  "type": "module",
+  "main": "./dist/node/extension.js",
+  "browser": "./dist/web/extension.js",
+  "scripts": {
+    "typecheck": "node scripts/typecheck.ts",
+    "lint": "oxlint --type-aware --deny-warnings && oxfmt --check && fallow --fail-on-issues && rumdl check . && node scripts/lint/ja-space/cli.ts && node scripts/lint/no-suppress/cli.ts && node scripts/lint/pnpm-policy/cli.ts",
+    "format": "oxfmt",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "build": "node scripts/build.ts",
+    "budget": "node scripts/budget.ts",
+    "package": "node scripts/package.ts && node scripts/check-vsix.ts",
+    "test:e2e": "pnpm -s build && playwright test",
+    "check-env": "node scripts/check-env.ts",
+    "check": "pnpm -s lint && pnpm -s typecheck && pnpm -s test:coverage && pnpm -s build && pnpm -s budget && node scripts/check-vsix.ts",
+    "prepare": "lefthook install"
+  },
+  "dependencies": {
+    "effect": "4.1.2"
+  },
+  "devDependencies": {
+    "@effect/tsgo": "0.67.5",
+    "@effect/vitest": "4.1.2",
+    "@playwright/test": "1.65.0",
+    "@types/node": "24.19.2",
+    "@types/vscode": "1.118.0",
+    "@vitest/coverage-v8": "5.1.0",
+    "@vscode/test-electron": "3.1.0",
+    "@vscode/vsce": "4.1.0",
+    "fallow": "3.41.0",
+    "lefthook": "2.2.1",
+    "oxfmt": "0.77.0",
+    "oxlint": "1.92.0",
+    "oxlint-tsgolint": "7.0.2006",
+    "rolldown": "1.3.0",
+    "rumdl": "0.3.2",
+    "typescript": "7.0.2",
+    "vite": "8.3.6",
+    "vitest": "5.1.0",
+    "yaml": "2.9.1"
+  },
+  "l10n": "./l10n",
+  "contributes": {
+    "commands": [
+      {
+        "command": "extTemplate.createNote",
+        "title": "%command.createNote.title%",
+        "category": "%command.category%"
+      }
+    ],
+    "configuration": {
+      "title": "%config.title%",
+      "properties": {
+        "extTemplate.notes.folder": {
+          "type": "string",
+          "default": "notes",
+          "description": "%config.notes.folder.description%"
+        },
+        "extTemplate.notes.author": {
+          "type": "string",
+          "default": "",
+          "description": "%config.notes.author.description%"
+        }
+      }
+    }
+  },
+  "engines": {
+    "node": "24.22.1",
+    "pnpm": "12.9.0",
+    "vscode": "^1.119.0"
+  },
+  "packageManager": "pnpm@12.9.0"
+}

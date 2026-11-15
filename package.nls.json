@@ -1,0 +1,9 @@
+{
+  "displayName": "VS Code Extension Template",
+  "description": "A template for VS Code extensions written with Effect.",
+  "command.createNote.title": "Create Note",
+  "command.category": "Extension Template",
+  "config.title": "Extension Template",
+  "config.notes.folder.description": "The workspace folder where notes are saved.",
+  "config.notes.author.description": "The author name written to notes. When empty, the desktop version uses the OS user name."
+}

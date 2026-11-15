@@ -1,0 +1,33 @@
+# pnpm settings (pnpm 12 reads these from pnpm-workspace.yaml).
+#
+# Supply-chain hardening. See docs/design.md for the rationale.
+
+# 1. Refuse packages published less than 7 days ago (10080 minutes). This gives
+#    the ecosystem time to detect compromised releases before we install them.
+#    There is no minimumReleaseAgeExclude list: every resolved package,
+#    including direct pins, must already be at least 7 days old.
+minimumReleaseAge: 10080
+
+# 2. Fail installs when the local Node/pnpm does not satisfy `engines` in
+#    package.json. This keeps every contributor and CI runner on the pinned
+#    toolchain (Node 24.22.1 / pnpm 12.9.0).
+engineStrict: true
+
+# 3. Refuse dependency downgrades (e.g. a malicious "newer" version that is
+#    actually older or has a lower trust level).
+trustPolicy: no-downgrade
+
+# 4. Block exotic transitive dependencies (git/tarball/URL subdeps), which are
+#    a common malware vector and are never needed here.
+blockExoticSubdeps: true
+
+# 5. Run install scripts only for packages explicitly allowed here. lefthook
+#    needs its postinstall step to install the Git hooks. Do not add another
+#    package here unless an install warning shows that it truly needs a build
+#    step.
+allowBuilds:
+  lefthook: true
+  # Not needed: its install script only downloads the signing binary for
+  # packaging, and this template never signs .vsix files or publishes to the
+  # Marketplace. Pinned to false so pnpm stops reporting it as an ignored build.
+  "@vscode/vsce-sign": false

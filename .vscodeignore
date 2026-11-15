@@ -1,0 +1,11 @@
+# いったん全部を除外し、配布に要るものだけを戻す。
+# 戻したもの以外が入らないことは scripts/check-vsix.ts が検査する。
+**
+!dist/node/extension.js
+!dist/web/extension.js
+!l10n/*.json
+!package.json
+!package.nls.json
+!package.nls.ja.json
+!README.md
+!LICENSE

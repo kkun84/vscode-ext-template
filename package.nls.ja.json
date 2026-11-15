@@ -1,0 +1,9 @@
+{
+  "displayName": "VS Code拡張機能の雛形",
+  "description": "Effectで書くVS Code拡張機能の雛形",
+  "command.createNote.title": "ノートを作成",
+  "command.category": "拡張機能の雛形",
+  "config.title": "拡張機能の雛形",
+  "config.notes.folder.description": "ノートの保存先にするワークスペース内のフォルダ名。",
+  "config.notes.author.description": "ノートに記録する著者名。空の場合、デスクトップ版はOSのユーザー名を使います。"
+}

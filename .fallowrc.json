@@ -1,0 +1,166 @@
+{
+  "$schema": "./node_modules/fallow/schema.json",
+  "entry": ["src/entrypoints/node/extension.ts", "src/entrypoints/web/extension.ts"],
+  // 拡張機能の外で動く道具。テスト、E2E、ビルドやlintのスクリプト。
+  "supportEntry": [
+    "scripts/*.ts",
+    "scripts/lint/*/cli.ts",
+    "e2e/**/*.spec.ts",
+    "e2e/driver/extension.ts",
+    "*.config.ts",
+    "src/**/*.test.ts",
+    "scripts/**/*.test.ts"
+  ],
+  "ignorePatterns": ["dist/**", "out/**", "coverage/**", "test-results/**", ".vscode-test/**", ".ref/**"],
+  // @effect/tsgoはscripts/typecheck.tsがバイナリとして呼び、@effect/language-serviceは
+  // tsconfig.jsonのプラグインとして読み込むので、fallowからは使っているように見えない。
+  // 残りはまだ書いていないスクリプトが使う依存。書いたら一覧から消す。
+  "ignoreDependencies": ["@effect/language-service", "@effect/tsgo", "@vscode/test-electron"],
+  "rulePacks": ["architecture.rules.json"],
+  // テストは、準備、実行、確認が1か所で読めることを優先し、重複を許す。
+  "duplicates": {
+    "ignore": ["**/*.test.ts"],
+    "mode": "mild",
+    "minTokens": 40,
+    "minLines": 4,
+    "ignoreDefaults": false,
+    "threshold": 0.001
+  },
+  "boundaries": {
+    "zones": [
+      {
+        "name": "unit-tests",
+        "patterns": ["src/**/*.test.ts"]
+      },
+      {
+        "name": "core",
+        "patterns": ["src/core/**"]
+      },
+      {
+        "name": "services",
+        "patterns": ["src/services/**"]
+      },
+      {
+        "name": "layers-vscode",
+        "patterns": ["src/layers/vscode/**"]
+      },
+      {
+        "name": "layers-node",
+        "patterns": ["src/layers/node/**"]
+      },
+      {
+        "name": "layers-web",
+        "patterns": ["src/layers/web/**"]
+      },
+      {
+        "name": "layers-test",
+        "patterns": ["src/layers/test/**"]
+      },
+      {
+        "name": "entrypoints-shared",
+        "patterns": ["src/entrypoints/shared/**"]
+      },
+      {
+        "name": "entrypoints-node",
+        "patterns": ["src/entrypoints/node/**"]
+      },
+      {
+        "name": "entrypoints-web",
+        "patterns": ["src/entrypoints/web/**"]
+      },
+      {
+        "name": "e2e-driver",
+        "patterns": ["e2e/driver/**"]
+      },
+      {
+        "name": "e2e-fixtures",
+        "patterns": ["e2e/fixtures.ts"]
+      },
+      {
+        "name": "e2e",
+        "patterns": ["e2e/**"]
+      },
+      {
+        "name": "tooling",
+        "patterns": ["scripts/**", "*.config.ts"]
+      }
+    ],
+    "rules": [
+      {
+        "from": "core",
+        "allow": ["core"]
+      },
+      {
+        "from": "services",
+        "allow": ["core", "services"]
+      },
+      {
+        "from": "layers-vscode",
+        "allow": ["services", "core", "layers-vscode"]
+      },
+      {
+        "from": "layers-node",
+        "allow": ["services", "core", "layers-node"]
+      },
+      {
+        "from": "layers-web",
+        "allow": ["services", "core", "layers-web"]
+      },
+      {
+        "from": "layers-test",
+        "allow": ["services", "core", "layers-test"]
+      },
+      {
+        "from": "entrypoints-shared",
+        "allow": ["layers-vscode", "services", "core"]
+      },
+      {
+        "from": "entrypoints-node",
+        "allow": ["entrypoints-shared", "layers-vscode", "layers-node", "services", "core"]
+      },
+      {
+        "from": "entrypoints-web",
+        "allow": ["entrypoints-shared", "layers-vscode", "layers-web", "services", "core"]
+      },
+      {
+        "from": "unit-tests",
+        "allow": ["core", "services", "layers-test", "unit-tests"]
+      },
+      {
+        "from": "e2e",
+        "allow": ["e2e", "e2e-fixtures"]
+      },
+      {
+        "from": "e2e-fixtures",
+        "allow": ["e2e", "e2e-driver"]
+      }
+    ],
+    "coverage": {
+      "requireAllFiles": true
+    },
+    "calls": {
+      "forbidden": [
+        {
+          "from": "core",
+          "callee": ["Date.now", "Math.random"]
+        },
+        {
+          "from": "services",
+          "callee": ["Date.now", "Math.random"]
+        }
+      ]
+    }
+  },
+  "rules": {
+    "unused-dev-dependencies": "error",
+    "circular-dependencies": "error",
+    "boundary-violation": "error",
+    "policy-violation": "error",
+    "added-suppression": "error"
+  },
+  "health": {
+    "maxCyclomatic": 20,
+    "maxCognitive": 15,
+    "maxCrap": 0
+  }
+}
