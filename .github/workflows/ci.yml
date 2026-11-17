@@ -38,8 +38,19 @@ jobs:
         run: |
           pnpm check-env
           pnpm install --frozen-lockfile
-      - name: Check
-        run: pnpm check
+      # 手元のpnpm checkと同じ検査を、どこで落ちたかが分かるように1つずつ動かす。
+      - name: Lint
+        run: pnpm lint
+      - name: Type check
+        run: pnpm typecheck
+      - name: Tests with coverage
+        run: pnpm test:coverage
+      - name: Build
+        run: pnpm build
+      - name: Size budget
+        run: pnpm budget
+      - name: Check the .vsix contents
+        run: pnpm check:vsix
       # 差分ではなく全件を動かす。テストを弱めたり消したりしただけの変更も、ここで落ちる。
       - name: Mutation tests
         run: pnpm mutation
@@ -89,8 +100,19 @@ jobs:
           cache: pnpm
       - name: Install
         run: pnpm install --frozen-lockfile
-      - name: Check
-        run: pnpm check
+      # 手元のpnpm checkと同じ検査を、どこで落ちたかが分かるように1つずつ動かす。
+      - name: Lint
+        run: pnpm lint
+      - name: Type check
+        run: pnpm typecheck
+      - name: Tests with coverage
+        run: pnpm test:coverage
+      - name: Build
+        run: pnpm build
+      - name: Size budget
+        run: pnpm budget
+      - name: Check the .vsix contents
+        run: pnpm check:vsix
       - name: E2E with the latest stable VS Code
         run: pnpm test:e2e
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

@@ -30,7 +30,8 @@
     "package": "node scripts/package.ts && node scripts/check-vsix.ts",
     "test:e2e": "pnpm -s build && playwright test",
     "check-env": "node scripts/check-env.ts",
-    "check": "pnpm -s lint && pnpm -s typecheck && pnpm -s test:coverage && pnpm -s build && pnpm -s budget && node scripts/check-vsix.ts",
+    "check:vsix": "node scripts/check-vsix.ts",
+    "check": "pnpm -s lint && pnpm -s typecheck && pnpm -s test:coverage && pnpm -s build && pnpm -s budget && pnpm -s check:vsix",
     "prepare": "lefthook install"
   },
   "dependencies": {
