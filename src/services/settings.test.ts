@@ -15,4 +15,8 @@ describe("NotesFolder", () => {
       expect(Option.isNone(decode(value))).toBe(true)
     }
   )
+
+  it("拒んだ理由を、設定を直せる言葉で伝える", () => {
+    expect(() => Schema.decodeSync(NotesFolder)("../escape")).toThrow("must be a relative folder inside the workspace")
+  })
 })

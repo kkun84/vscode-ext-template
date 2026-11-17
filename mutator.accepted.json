@@ -1,0 +1,6 @@
+{
+  "187gnveer5p": {
+    "reason": "equivalent: the Effect.fn name only labels the tracing span; the result does not depend on it",
+    "where": "src/services/create-note.ts:16:37 \"createNote\" -> \"\""
+  }
+}

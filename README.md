@@ -43,16 +43,30 @@ nix develop          # またはdirenvで自動に
 pnpm install
 pnpm check           # lint、型検査、テスト、ビルド、サイズの上限、.vsixの中身
 pnpm test:e2e        # E2E。LinuxではNixの`.#e2e`シェルの中でxvfb-run -aを付ける
-pnpm mutation:diff   # origin/mainとの差分だけミューテーションテスト。生き残りがあると失敗
+pnpm mutation:diff   # origin/mainとの差分だけミューテーションテスト
 pnpm mutation        # ミューテーションテストを全件。レポートは.mutator/report/index.html
 pnpm package         # .vsixを作る
 ```
 
 Nixを使わない場合は、`.node-version`の版のNode.jsと、`package.json`の`packageManager`の版のpnpmを入れます。
 
-## ミューテーションテストをやめるとき
+## ミューテーションテスト
 
-`package.json`の`mutation`と`mutation:diff`、`lefthook.yml`の`mutation`、`mutator.config.json`（あれば`mutator.accepted.json`も）、`AGENTS.md`の完了の条件にある`pnpm mutation:diff`を消し、`pnpm remove @mizchi/mutator`を実行します。
+[@mizchi/mutator](https://github.com/mizchi/mutator) で、テストが実装の変更を検出できるかを確かめます。対象は`src/core`と`src/services`です。テストが検出できないミュータント（生き残りと、どのテストも届かないもの）が1つでもあれば失敗します。
+
+- 手元では、pre-pushが`pnpm mutation:diff`で`origin/main`との差分だけを実行します。`origin/main`を取得済みのcloneが要ります
+- CIでは、`check (Linux)`が`pnpm mutation`で全件を実行します。テストを弱めたり消したりしただけの変更は、差分では検出できないためです
+- 検出できなかったミュータントは、テストを足して落とします。どんな入力でも振る舞いが変わらない等価ミュータントだけを、`pnpm exec mutator accept <key> --reason <理由>`で`mutator.accepted.json`に記録します。キーは`pnpm exec mutator --reporter agent`の`gaps[].key`にあります
+
+### やめるとき
+
+次を消し、`pnpm remove @mizchi/mutator`を実行します。
+
+- `package.json`の`mutation`と`mutation:diff`
+- `lefthook.yml`の`mutation`と、`.github/workflows/ci.yml`の`Mutation tests`
+- `mutator.config.json`と`mutator.accepted.json`
+- `.mutator`の除外（`.gitignore`、`.oxlintrc.json`、`.rumdl.toml`、`.fallowrc.json`、`scripts/lint/shared/files.ts`）
+- `AGENTS.md`の完了の条件、`docs/design.md`、このREADMEにあるミューテーションテストの記述
 
 ## Web版をやめるとき
 

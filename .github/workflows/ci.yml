@@ -40,8 +40,9 @@ jobs:
           pnpm install --frozen-lockfile
       - name: Check
         run: pnpm check
-      - name: Audit dependencies
-        run: pnpm audit --audit-level moderate
+      # 差分ではなく全件を動かす。テストを弱めたり消したりしただけの変更も、ここで落ちる。
+      - name: Mutation tests
+        run: pnpm mutation
 
   e2e:
     name: e2e (Linux)

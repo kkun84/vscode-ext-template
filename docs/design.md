@@ -103,6 +103,15 @@ rolldownを直接呼ぶ`scripts/build.ts`で、2つのバンドルを作る。
 
 単体テストと結合テストは、どちらも1つのプロセスで完結するので、`pnpm test`でまとめて実行する。テストファイルは対象の隣に`*.test.ts`として置く。E2Eは`pnpm test:e2e`で分けて実行する。
 
+### ミューテーションテスト
+
+カバレッジは、コードが実行されたことしか示さない。実装を書き換えてもテストが落ちない箇所を見つけるために、`@mizchi/mutator`で`core`と`services`の実装を1か所ずつ書き換え、単体テストと結合テストが落ちるかを確かめる。
+
+- 手元のpre-pushは、`origin/main`との差分にあるミュータントだけを実行する。数秒で終わる
+- CIは全件を実行する。テストを弱めたり消したりしただけの変更は、実装の差分に現れないので、差分では検出できない
+- `src/services/ports.ts`は対象から外す。サービスの識別子の文字列だけで、空にしても観測できない
+- 等価ミュータントは、理由を付けて`mutator.accepted.json`に記録する
+
 ### E2Eの決まり
 
 - 操作は画面から行う。コマンドパレット、入力欄、クリックを使う
@@ -139,12 +148,13 @@ VS Codeの実行ファイルは、環境変数`VSCODE_EXECUTABLE`があればそ
 - Nixのflakeが、Node.js 24、pnpm 12、shellcheck、actionlintを固定する。E2E用の`e2e`シェルは、VS Codeとxvfbも加える。nixpkgsは安定版のチャンネルにし、7日以上前のrevに固定する
 - `.envrc`に`use flake`を置く。direnvは補助で、無くても`nix develop`で同じ環境に入れる
 - pnpmは、公開から7日以上経った版だけを入れる。依存のインストールスクリプトは、`allowBuilds`で許可したものだけを動かす
-- lefthookで、pre-commitに変更したファイルの整形とlint、pre-pushに`pnpm check`を動かす
+- lefthookで、pre-commitに変更したファイルの整形とlint、pre-pushに`pnpm check`と差分のミューテーションテストを動かす
 
 ## CI
 
 - LinuxとWindowsで、lint、型検査、テスト、ビルド、E2Eを動かす。有名な拡張の多くがこの2つを使っている。WindowsではNixが動かないので、Node.jsとpnpmを直接入れる。版は`.node-version`と`package.json`の`packageManager`から読む。`engines.node`は`^24.22.1`の範囲にする。完全に固定すると、Node.jsを自前で用意するDependabotがインストールで止まるため。Linuxでは`scripts/check-env.ts`が、Nixの入れたNode.jsとpnpmがこの2つと一致することを検査する。こうして、版を書く場所を`flake.lock`、`.node-version`、`package.json`に限り、食い違えばCIで落とす
-- CodeQLと、プルリクエストで増える依存関係のレビューを動かす
+- Linuxでは、ミューテーションテストの全件も動かす
+- CodeQLと、プルリクエストで増える依存関係のレビューを動かす。既に入っている依存の`pnpm audit`は、週1回の定期実行で動かす。プルリクエストで動かすと、修正版の無い勧告が出たときに無関係な変更まで落ちる
 - Actionsは、タグではなくコミットのハッシュで固定する。リポジトリの設定（`.github/settings/`）でもハッシュでの固定を必須にする
 - 依存関係の更新はDependabotに任せる。npm、GitHub Actions、Nixのいずれも、公開から7日経つまで更新しない。Renovateは使わない。Dependabotは設定ファイルだけで動き、GitHubのアプリを入れる必要がないため
 - タグを付けると、`.vsix`を作ってGitHubのReleaseに添付する。Marketplaceには公開しない

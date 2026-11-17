@@ -13,7 +13,7 @@ Effect v4で書くVS Code拡張機能の雛形です。設計は[docs/design.md]
 
 - `pnpm check`: lint、型検査、テストとカバレッジ、ビルド、サイズの上限、`.vsix`の中身
 - `pnpm test:e2e`: 実際のエディタを起動するE2Eテスト。Linuxでは`nix develop .#e2e`の中で`xvfb-run -a pnpm test:e2e`
-- `pnpm mutation:diff`: `origin/main`との差分に含まれる`src/core`と`src/services`のミュータントを実行する。生き残りはテストを足して落とす。等価ミュータントだけを`pnpm exec mutator accept <key> --reason <理由>`で`mutator.accepted.json`に記録する
+- `pnpm mutation:diff`: `origin/main`との差分に含まれる`src/core`と`src/services`のミュータントを実行する。`origin/main`を取得済みのcloneで実行する。テストが検出できないミュータント（生き残りと、テストの届かないもの）はテストを足して落とす。等価ミュータントだけを`pnpm exec mutator accept <key> --reason <理由>`で`mutator.accepted.json`に記録する。キーは`pnpm exec mutator --reporter agent`の`gaps[].key`にある
 
 ## 層の分け方
 
