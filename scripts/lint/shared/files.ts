@@ -13,6 +13,7 @@ const SKIP_DIRS: ReadonlySet<string> = new Set([
   "coverage",
   ".direnv",
   ".fallow",
+  ".mutator",
   ".rumdl_cache",
   "playwright-report",
   "test-results"

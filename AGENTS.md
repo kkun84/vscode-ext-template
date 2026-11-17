@@ -9,10 +9,11 @@ Effect v4で書くVS Code拡張機能の雛形です。設計は[docs/design.md]
 
 ## 完了の条件
 
-変更を終える前に、次の2つを実行し、両方が成功することを確かめます。
+変更を終える前に、次の3つを実行し、すべてが成功することを確かめます。
 
 - `pnpm check`: lint、型検査、テストとカバレッジ、ビルド、サイズの上限、`.vsix`の中身
 - `pnpm test:e2e`: 実際のエディタを起動するE2Eテスト。Linuxでは`nix develop .#e2e`の中で`xvfb-run -a pnpm test:e2e`
+- `pnpm mutation:diff`: `origin/main`との差分に含まれる`src/core`と`src/services`のミュータントを実行する。生き残りはテストを足して落とす。等価ミュータントだけを`pnpm exec mutator accept <key> --reason <理由>`で`mutator.accepted.json`に記録する
 
 ## 層の分け方
 

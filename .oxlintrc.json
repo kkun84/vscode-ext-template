@@ -38,7 +38,7 @@
     "typescript/await-thenable": "error",
     "typescript/no-unnecessary-type-assertion": "error"
   },
-  "ignorePatterns": ["dist", "out", ".ref", "coverage", "test-results", ".vscode-test"],
+  "ignorePatterns": ["dist", "out", ".ref", "coverage", ".mutator", "test-results", ".vscode-test"],
   "overrides": [
     {
       "files": ["scripts/**", "e2e/**"],
