@@ -36,6 +36,10 @@ describe("formatDate", () => {
     expect(formatDate(atNoon(2024, 1, 5))).toBe("2024-01-05")
   })
 
+  it("年が3桁なら0で埋める", () => {
+    expect(formatDate(new Date(987, 0, 5))).toBe("0987-01-05")
+  })
+
   it("年末の日付をそのまま返す", () => {
     expect(formatDate(atNoon(2024, 12, 31))).toBe("2024-12-31")
   })
@@ -58,6 +62,10 @@ describe("nextAvailableName", () => {
 
   it("-2まで埋まっていれば-3を付ける", () => {
     expect(nextAvailableName("note.md", ["note.md", "note-2.md"])).toBe("note-3.md")
+  })
+
+  it("ドットで始まる名前は全体を拡張子の無い名前として扱う", () => {
+    expect(nextAvailableName(".env", [".env"])).toBe(".env-2")
   })
 
   it("拡張子が無くても衝突を避ける", () => {

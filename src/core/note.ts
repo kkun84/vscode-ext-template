@@ -15,7 +15,7 @@ export const slugify = (title: string): string => {
   const slug = title
     .toLowerCase()
     .replaceAll(/[^\p{L}\p{N}]+/gu, "-")
-    .replaceAll(/^-+|-+$/gu, "")
+    .replaceAll(/^-|-$/gu, "")
   return slug === "" ? "note" : slug
 }
 

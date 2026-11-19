@@ -10,7 +10,7 @@
 [global]
 flavor = "standard"
 respect_gitignore = true
-exclude = ["node_modules", "dist", "out", "coverage", ".ref", ".vscode-test", "test-results"]
+exclude = ["node_modules", "dist", "out", "coverage", ".mutator", ".ref", ".vscode-test", "test-results"]
 
 [MD013]
 # 日本語の文章では行の長さは表示側の仕事。

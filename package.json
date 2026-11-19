@@ -23,12 +23,15 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "mutation": "mutator",
+    "mutation:diff": "sh -c 'if git rev-parse --verify --quiet origin/main >/dev/null 2>&1; then mutator --since origin/main; else echo \"skipping mutation:diff: origin/main not found\"; fi'",
     "build": "node scripts/build.ts",
     "budget": "node scripts/budget.ts",
     "package": "node scripts/package.ts && node scripts/check-vsix.ts",
     "test:e2e": "pnpm -s build && playwright test",
     "check-env": "node scripts/check-env.ts",
-    "check": "pnpm -s lint && pnpm -s typecheck && pnpm -s test:coverage && pnpm -s build && pnpm -s budget && node scripts/check-vsix.ts",
+    "check:vsix": "node scripts/check-vsix.ts",
+    "check": "pnpm -s lint && pnpm -s typecheck && pnpm -s test:coverage && pnpm -s build && pnpm -s budget && pnpm -s check:vsix",
     "prepare": "lefthook install"
   },
   "dependencies": {
@@ -37,6 +40,7 @@
   "devDependencies": {
     "@effect/tsgo": "0.67.5",
     "@effect/vitest": "4.1.2",
+    "@mizchi/mutator": "0.2.0",
     "@playwright/test": "1.65.0",
     "@types/node": "24.19.2",
     "@types/vscode": "1.116.0",

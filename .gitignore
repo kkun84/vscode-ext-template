@@ -9,3 +9,4 @@ playwright-report/
 *.vsix
 .direnv/
 .fallow/
+.mutator/

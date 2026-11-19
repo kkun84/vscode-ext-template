@@ -4,7 +4,7 @@
   "entry": ["src/entrypoints/node/extension.ts", "src/entrypoints/web/extension.ts"],
   // 拡張機能の外で動く道具。テスト、E2E、ビルドやlintのスクリプト。
   "supportEntry": ["scripts/*.ts", "scripts/lint/*/cli.ts", "e2e/**/*.spec.ts", "*.config.ts", "src/**/*.test.ts", "scripts/**/*.test.ts"],
-  "ignorePatterns": ["dist/**", "out/**", "coverage/**", "test-results/**", ".vscode-test/**", ".ref/**"],
+  "ignorePatterns": ["dist/**", "out/**", "coverage/**", ".mutator/**", "test-results/**", ".vscode-test/**", ".ref/**"],
   // @effect/tsgoはscripts/typecheck.tsがバイナリとして呼び、@effect/language-serviceは
   // tsconfig.jsonのプラグインとして読み込むので、fallowからは使っているように見えない。
   "ignoreDependencies": ["@effect/language-service", "@effect/tsgo"],

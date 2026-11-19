@@ -23,3 +23,5 @@ pre-push:
   jobs:
     - name: check
       run: pnpm check
+    - name: mutation
+      run: pnpm mutation:diff
