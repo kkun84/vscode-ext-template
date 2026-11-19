@@ -58,6 +58,16 @@ jobs:
       - name: Mutation tests (changed lines)
         if: github.event_name == 'pull_request'
         run: pnpm exec mutator --since "origin/${GITHUB_BASE_REF}"
+      # この2つを書き換えると、失敗させずに検査の範囲を狭められるので、PRで変わったら警告する。
+      - name: Mutation settings changes
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          for file in mutator.config.json mutator.accepted.json; do
+            if ! git diff --quiet "origin/${GITHUB_BASE_REF}...HEAD" -- "$file"; then
+              echo "::warning file=${file},title=ミューテーションテストの設定が変わった::${file}が変わりました。検査する範囲が狭まっていないか、動作の変わる壊し方を記録していないかを確かめてください。"
+            fi
+          done
       # 全件で全体のスコアを出す。テストを弱めたり消したりしただけの変更も、ここに現れる。
       # 警告は上のステップに任せるので、GITHUB_ACTIONSを空にして出さない。
       - name: Mutation tests (all)
