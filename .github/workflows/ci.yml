@@ -32,6 +32,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # 変更した行のミューテーションテストが、比べる相手のブランチを使う。
+          fetch-depth: 0
       - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
       - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
       - name: Install
@@ -51,9 +53,31 @@ jobs:
         run: pnpm budget
       - name: Check the .vsix contents
         run: pnpm check:vsix
-      # 差分ではなく全件を動かす。テストを弱めたり消したりしただけの変更も、ここで落ちる。
-      - name: Mutation tests
-        run: pnpm mutation
+      # ミューテーションテストは指標で、検出漏れがあっても失敗にしない。
+      # PRでは、変更した行の検出漏れ（どのテストも届かないものを含む）を差分に警告として出す。
+      - name: Mutation tests (changed lines)
+        if: github.event_name == 'pull_request'
+        run: pnpm exec mutator --since "origin/${GITHUB_BASE_REF}"
+      # mutatorの設定と等価ミュータントの記録を書き換えると、失敗させずに検査の範囲を狭められるので、PRで変わったら警告する。
+      - name: Mutation settings changes
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          git diff --name-only "origin/${GITHUB_BASE_REF}...HEAD" -- 'mutator.config.*' mutator.accepted.json |
+            while read -r file; do
+              echo "::warning file=${file},title=ミューテーションテストの設定が変わった::${file}が変わりました。検査する範囲が狭まっていないか、動作の変わる壊し方を記録していないかを確かめてください。"
+            done
+      # 全件で全体のスコアを出し、ジョブの概要に書く。テストを弱めたり消したりしただけの変更は、
+      # ここでスコアが下がる。警告は上のステップに任せるので、GITHUB_ACTIONSを空にして出さない。
+      - name: Mutation tests (all)
+        run: |
+          GITHUB_ACTIONS='' pnpm mutation | tee "$RUNNER_TEMP/mutation.txt"
+          {
+            echo "### ミューテーションテスト（全件）"
+            echo '```text'
+            grep -E '^(mutants|Killed|score)' "$RUNNER_TEMP/mutation.txt" || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   e2e:
     name: e2e (Linux)

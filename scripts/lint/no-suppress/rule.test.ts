@@ -9,10 +9,12 @@ const TS_IGNORE = directive(2)
 const TS_NOCHECK = directive(3)
 const ESLINT = directive(4)
 const FALLOW = directive(5)
+const MUTATOR = directive(9)
+const STRYKER = directive(10)
 
 describe("suppressionDirectives", () => {
-  it("builds all nine directives", () => {
-    expect(suppressionDirectives()).toHaveLength(9)
+  it("builds all eleven directives", () => {
+    expect(suppressionDirectives()).toHaveLength(11)
     expect(OXLINT).toBe(["oxlint", "disable"].join("-"))
     expect(TS_EXPECT).toBe(["@ts", "expect", "error"].join("-"))
   })
@@ -31,7 +33,17 @@ describe("findSuppressions in TypeScript", () => {
   })
 
   it("flags each directive used as a comment", () => {
-    const inputs = [`// ${TS_EXPECT}\n`, `// ${TS_IGNORE}\n`, `// ${TS_NOCHECK}\n`, `// ${ESLINT}-next-line\n`, `// ${FALLOW}-next-line\n`]
+    const inputs = [
+      `// ${TS_EXPECT}\n`,
+      `// ${TS_IGNORE}\n`,
+      `// ${TS_NOCHECK}\n`,
+      `// ${ESLINT}-next-line\n`,
+      `// ${FALLOW}-next-line\n`,
+      `// ${MUTATOR}-next-line: reason\n`,
+      `// ${MUTATOR}-line\n`,
+      `/* ${MUTATOR} */\n`,
+      `// ${STRYKER} next-line all\n`
+    ]
     for (const input of inputs) {
       expect(findSuppressions(input, ".ts")).toHaveLength(1)
     }

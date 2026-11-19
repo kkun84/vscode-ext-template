@@ -40,7 +40,9 @@ export const suppressionDirectives = (): readonly string[] => [
   ["fallow", "ignore"].join("-"),
   ["oxfmt", "ignore"].join("-"),
   ["prettier", "ignore"].join("-"),
-  ["@effect", "diagnostics"].join("-")
+  ["@effect", "diagnostics"].join("-"),
+  ["mutator", "disable"].join("-"),
+  ["Stryker", "disable"].join(" ")
 ]
 
 /** Extensions that may contain comments we scan for directives. */
