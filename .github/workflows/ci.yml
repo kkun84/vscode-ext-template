@@ -58,10 +58,26 @@ jobs:
       - name: Mutation tests (changed lines)
         if: github.event_name == 'pull_request'
         run: pnpm exec mutator --since "origin/${GITHUB_BASE_REF}"
-      # 全件で全体のスコアを出す。テストを弱めたり消したりしただけの変更も、ここに現れる。
-      # 警告は上のステップに任せるので、GITHUB_ACTIONSを空にして出さない。
+      # mutatorの設定と等価ミュータントの記録を書き換えると、失敗させずに検査の範囲を狭められるので、PRで変わったら警告する。
+      - name: Mutation settings changes
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          git diff --name-only "origin/${GITHUB_BASE_REF}...HEAD" -- 'mutator.config.*' mutator.accepted.json |
+            while read -r file; do
+              echo "::warning file=${file},title=ミューテーションテストの設定が変わった::${file}が変わりました。検査する範囲が狭まっていないか、動作の変わる壊し方を記録していないかを確かめてください。"
+            done
+      # 全件で全体のスコアを出し、ジョブの概要に書く。テストを弱めたり消したりしただけの変更は、
+      # ここでスコアが下がる。警告は上のステップに任せるので、GITHUB_ACTIONSを空にして出さない。
       - name: Mutation tests (all)
-        run: GITHUB_ACTIONS='' pnpm mutation
+        run: |
+          GITHUB_ACTIONS='' pnpm mutation | tee "$RUNNER_TEMP/mutation.txt"
+          {
+            echo "### ミューテーションテスト（全件）"
+            echo '```text'
+            grep -E '^(mutants|Killed|score)' "$RUNNER_TEMP/mutation.txt" || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   e2e:
     name: e2e (Linux)

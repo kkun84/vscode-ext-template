@@ -10,7 +10,7 @@ describe("型付きのエラー", () => {
     expect(new UnexpectedFailure({ command: "createNote" })._tag).toBe("UnexpectedFailure")
   })
 
-  it("通知に使う値を保つ", () => {
+  it("ログに出す値を保つ", () => {
     const read = new NotesFolderReadFailed({ folder: "notes", detail: "denied" })
     expect([read.folder, read.detail]).toStrictEqual(["notes", "denied"])
 
