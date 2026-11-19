@@ -24,7 +24,7 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "mutation": "mutator",
-    "mutation:diff": "mutator --since origin/main",
+    "mutation:diff": "sh -c 'if git rev-parse --verify --quiet origin/main >/dev/null 2>&1; then mutator --since origin/main; else echo \"skipping mutation:diff: origin/main not found\"; fi'",
     "build": "node scripts/build.ts",
     "budget": "node scripts/budget.ts",
     "package": "node scripts/package.ts && node scripts/check-vsix.ts",

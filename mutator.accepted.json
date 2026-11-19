@@ -1,6 +1,6 @@
 {
   "187gnveer5p": {
-    "reason": "equivalent: the Effect.fn name only labels the tracing span; the result does not depend on it",
+    "reason": "equivalent for the result: the Effect.fn name only names the tracing span and the frame in Cause.pretty logs; the success value and the typed failures do not depend on it",
     "where": "src/services/create-note.ts:16:37 \"createNote\" -> \"\""
   }
 }
