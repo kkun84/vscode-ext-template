@@ -37,6 +37,7 @@ jobs:
       - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
       - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
       - name: Install
+        id: install
         run: |
           pnpm check-env
           pnpm install --frozen-lockfile
@@ -55,22 +56,17 @@ jobs:
         run: pnpm check:vsix
       # ミューテーションテストの結果は指標で、検出できなかったミュータントがあっても失敗にしない。
       # 失敗にするのは、テストを弱めた変更（変わっていないコードについて、前は検出できたミュータントを
-      # 今は検出できない）だけ。比べる前回の結果は、mainへのpushで保存したキャッシュから復元する。
-      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
-        with:
-          path: .mutator
-          key: mutator-${{ github.sha }}
-          restore-keys: mutator-
-      # PRでは、変更した行と、変更したテストが確かめるコードのミュータントを実行する。変更した行の検出漏れ
-      # （どのテストも届かないものを含む）は、mutatorが差分に警告として出す。続けて結果を判定し、
-      # テストを弱めた変更があれば失敗させる。何も検出しない新しいテストと、mutatorの設定の変更は警告にする。
+      # 今は検出できない）だけ。PRでは、pre-pushと同じscripts/mutation-diff.tsが、PRの分岐点のコミットで
+      # 全件を実行して比べる基準をその場で作り、変更した行と、変更したテストが確かめるコードのミュータントを
+      # 実行して判定する。前回の結果をキャッシュで引き継がないので、キャッシュが消えても判定は止まらず、
+      # mainに入った変更が後のPRを落とし続けることもない。--kill-matrixで、何も検出しない新しいテストも警告する。
       - name: Mutation tests (changed lines)
         if: github.event_name == 'pull_request'
-        run: |
-          pnpm exec mutator --since "origin/${GITHUB_BASE_REF}" --include-test-changes --kill-matrix --reporter text --reporter json
-          pnpm mutation:findings "origin/${GITHUB_BASE_REF}"
-      # 全件で全体のスコアを出し、ジョブの概要に書く。警告は上のステップに任せるので、GITHUB_ACTIONSを空にして出さない。
+        run: pnpm mutation:diff "origin/${GITHUB_BASE_REF}" --kill-matrix
+      # 全件で全体のスコアを出し、ジョブの概要に書く。上の判定が失敗しても、スコアは出す。
+      # 警告は上のステップに任せるので、GITHUB_ACTIONSを空にして出さない。
       - name: Mutation tests (all)
+        if: ${{ !cancelled() && steps.install.conclusion == 'success' }}
         run: |
           GITHUB_ACTIONS='' pnpm mutation | tee "$RUNNER_TEMP/mutation.txt"
           {
@@ -79,12 +75,6 @@ jobs:
             grep -E '^(mutants|Killed|score)' "$RUNNER_TEMP/mutation.txt" || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-      # mainの全件の結果を、PRが比べる基準として保存する。
-      - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
-        if: github.event_name == 'push'
-        with:
-          path: .mutator
-          key: mutator-${{ github.sha }}
 
   e2e:
     name: e2e (Linux)

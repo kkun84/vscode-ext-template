@@ -18,7 +18,8 @@ Effect v4で書くVS Code拡張機能の雛形です。設計は[docs/design.md]
 
 - 検出できないミュータントは、テストが足りないのか、コードが要らないのかを判断します
 - テストを足すときは、呼び出す側から見える振る舞いを確かめます。ミュータントを落とすためだけに実装をなぞるテストは書きません
-- テストを弱めた変更で失敗したら、弱めたアサーションや消したテストを戻すか、同じ振る舞いを確かめるテストを足します
+- テストを弱めた変更で失敗したら、弱めたアサーションや消したテストを戻すか、同じ振る舞いを確かめるテストを足します。比べる相手は`origin/main`との分岐点のコミットで毎回作り直すので、`.mutator`を消しても、ブランチを切り替えても結果は変わりません
+- 何も検出しない新しいテストは、CIだけが警告します。手元で見るときは`pnpm mutation:diff origin/main --kill-matrix`を実行します
 - 手順は`node_modules/@mizchi/mutator/skills/mutation-test-loop/SKILL.md`に従います
 - 等価ミュータントだけを`pnpm exec mutator accept <key> --reason <理由>`で`mutator.accepted.json`に記録します。キーは`pnpm exec mutator --reporter agent`の`gaps[].key`にあります。テストを弱めた変更を通すために記録してはいけません。ミューテーションテストから外すものは、コメントではなく`mutator.config.json`の`exclude`に書きます。PRで`mutator.config.*`か`mutator.accepted.json`を変えると、CIが警告を出します
 
