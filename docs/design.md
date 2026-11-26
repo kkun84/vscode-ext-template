@@ -147,6 +147,8 @@ rolldownを直接呼ぶ`scripts/build.ts`で、2つのバンドルを作る。
 
 VS Codeの実行ファイルは、環境変数`VSCODE_EXECUTABLE`があればそれを使い、無ければ`@vscode/test-electron`で最新の安定版をダウンロードする。
 
+ダウンロードは、Playwrightの`globalSetup`(`e2e/global-setup.ts`)で一度だけ行い、パスを`VSCODE_EXECUTABLE`に入れてワーカーに渡す。ワーカーごとにダウンロードすると、同じ`.vscode-test`に同時に展開し、片方が書き込み中の`Code.exe`をもう片方が起動して、Windowsで起動に失敗した。
+
 - Linuxでは、Nixの`e2e`シェルが`VSCODE_EXECUTABLE`にnixpkgsのVSCodiumを渡す。VSCodiumはVS Codeと同じソースから作られ、拡張機能のAPIも同じである。VS Code本体はunfreeで、nixpkgsのバイナリキャッシュに無く、ビルドの度にMicrosoftのサーバーから取得する必要があるので使わない。この版は最低の版でもある
 - Windowsでは、最新の安定版をダウンロードする
 - こうすると、CI全体で最低の版と最新の版の両方を確かめられる
