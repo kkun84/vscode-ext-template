@@ -7,17 +7,19 @@ import {
   missingFrom,
   MutationReport,
   parseOptions,
-  recheckCandidates,
   regressionAdvice,
   reviewBaselineFailure,
   reviewDroppedSources,
   reviewDroppedTests,
   reviewFindings,
-  reviewRechecked,
+  reviewNotRun,
+  reviewTrackedMutator,
+  reviewUnselected,
   reviewSettingChanges,
   reviewSkippedTests,
   reviewUnreadableReport,
-  scopeHashes
+  snapshotRows,
+  unselectedCandidates
 } from "./mutation-report.ts"
 
 const decode = Schema.decodeUnknownSync(MutationReport)
@@ -235,15 +237,17 @@ describe("reviewSettingChanges", () => {
           "src/core/note.ts",
           "scripts/mutation-diff.ts",
           "scripts/mutation-report.ts",
-          "docs/vitest.config.ts"
+          "docs/vitest.config.ts",
+          ".github/workflows/ci.yml"
         ],
         ["test/setup.ts"]
       )
     ).toEqual([
       "::warning file=vitest.config.ts,title=テストの設定が変わった::vitest.config.tsが変わりました。テストの設定と準備のファイルは、expectを無力化するなどして、テストを弱めずに判定を外せます。人が確かめてください。",
       "::warning file=test/setup.ts,title=テストの設定が変わった::test/setup.tsが変わりました。テストの設定と準備のファイルは、expectを無力化するなどして、テストを弱めずに判定を外せます。人が確かめてください。",
-      "::warning file=scripts/mutation-diff.ts,title=テストを弱めた変更の判定が変わった::scripts/mutation-diff.tsが変わりました。判定を書き換えると、テストを弱めた変更を通せます。人が確かめてください。",
-      "::warning file=scripts/mutation-report.ts,title=テストを弱めた変更の判定が変わった::scripts/mutation-report.tsが変わりました。判定を書き換えると、テストを弱めた変更を通せます。人が確かめてください。"
+      "::warning file=scripts/mutation-diff.ts,title=テストを弱めた変更の判定が変わった::scripts/mutation-diff.tsが変わりました。判定のスクリプトや、それを呼ぶ所（package.jsonのscripts、lefthook.yml、ワークフロー）を書き換えると、テストを弱めた変更を通せます。人が確かめてください。",
+      "::warning file=scripts/mutation-report.ts,title=テストを弱めた変更の判定が変わった::scripts/mutation-report.tsが変わりました。判定のスクリプトや、それを呼ぶ所（package.jsonのscripts、lefthook.yml、ワークフロー）を書き換えると、テストを弱めた変更を通せます。人が確かめてください。",
+      "::warning file=.github/workflows/ci.yml,title=テストを弱めた変更の判定が変わった::.github/workflows/ci.ymlが変わりました。判定のスクリプトや、それを呼ぶ所（package.jsonのscripts、lefthook.yml、ワークフロー）を書き換えると、テストを弱めた変更を通せます。人が確かめてください。"
     ])
   })
 })
@@ -272,65 +276,110 @@ describe("reviewUnreadableReport", () => {
 })
 
 describe("parseOptions", () => {
-  it("基準のrefと2つの指定を読む", () => {
-    expect(parseOptions([])).toEqual({ ref: "origin/main", killMatrix: false, skipWithoutBase: false })
-    expect(parseOptions(["origin/dev", "--kill-matrix"])).toEqual({ ref: "origin/dev", killMatrix: true, skipWithoutBase: false })
-    expect(parseOptions(["--skip-without-base"])).toEqual({ ref: "origin/main", killMatrix: false, skipWithoutBase: true })
+  it("基準のrefと指定を読む", () => {
+    expect(parseOptions([])).toEqual({ ref: "origin/main", skipWithoutBase: false })
+    expect(parseOptions(["origin/dev"])).toEqual({ ref: "origin/dev", skipWithoutBase: false })
+    expect(parseOptions(["--skip-without-base"])).toEqual({ ref: "origin/main", skipWithoutBase: true })
   })
 
   it("知らない指定と、2つ以上のrefは、黙って無視せずに理由を返す", () => {
-    expect(parseOptions(["--kill-matrx"])).toBe("知らない指定です: --kill-matrx")
+    expect(parseOptions(["--kill-matrix"])).toBe("知らない指定です: --kill-matrix")
     expect(parseOptions(["origin/main", "origin/dev"])).toBe("基準のrefは1つだけ指定できます: origin/main origin/dev")
   })
 })
 
-describe("前の結果を使い回した「検出した」の確かめ直し", () => {
-  // 負荷をかけて再現した見逃しの実物の抜粋。基準で、関係の無いcreate-noteのテストも検出したテストに数えられ、
-  // 差分ではアサーションを消したのに、前の結果がそのまま使われて「検出した」のままだった。
-  const { base, current } = Schema.decodeUnknownSync(Schema.Struct({ base: MutationReport, current: MutationReport }))(
-    fixture("mutation-report-reused-kill.json")
-  )
-  const scopes = new Map([["lri4646151", "1juwxkiot46"]])
+const row = (status: string, matrix = false, scopeHash = "h") => ({ scopeHash, status, matrix })
 
-  it("基準で検出したテストに、変えたテストと変わっていないテストを含み、今も検出したことになっているものを、確かめ直す", () => {
-    expect(current.findings.some((finding) => finding.kind === "detectionRegression")).toBe(false)
-    expect(recheckCandidates(base, current, scopes, scopes)).toEqual(["lri4646151"])
-  })
-
-  it("関数の中身が変わったもの、mutatorが既に報告したもの、検出したテストが変わっていないものは、確かめ直さない", () => {
-    expect(recheckCandidates(base, current, scopes, new Map([["lri4646151", "changed"]]))).toEqual([])
-    expect(recheckCandidates(base, { ...current, findings: [{ kind: "detectionRegression", key: "lri4646151" }] }, scopes, scopes)).toEqual(
-      []
-    )
-    expect(recheckCandidates(base, { ...current, testChanges: { added: [], changed: [], removed: [] } }, scopes, scopes)).toEqual([])
-    // 検出したテストが全部変わったものは、mutatorが実行し直すので要らない。
-    const allTouched = {
-      added: [],
-      changed: ["src/core/note.test.ts#formatDate > 年が3桁なら0で埋める"],
-      removed: ["src/services/create-note.test.ts#createNote > 入力欄の題名でノートを作り、開いて知らせる"]
+describe("差分の実行で選ばれないミュータントの確かめ", () => {
+  const killer = "src/core/word.test.ts#単語 > 英小文字だけなら単語"
+  const base = {
+    ...report([]),
+    files: {
+      "src/core/word.ts": { mutants: [mutant("top", 1, "Killed", [killer]), mutant("other", 2, "Killed", ["src/a.test.ts#変えていない"])] }
     }
-    expect(recheckCandidates(base, { ...current, testChanges: allTouched }, scopes, scopes)).toEqual([])
-  })
+  }
+  const current = { ...report([]), testChanges: { added: [], changed: [], removed: [killer] } }
+  const baseRows = new Map([
+    ["top", row("Killed")],
+    ["other", row("Killed")]
+  ])
 
-  it("実行し直したどれかで検出されなければ、テストが弱くなったとして失敗にする", () => {
-    const survived = report([], "unavailable")
-    const rerun = { ...survived, files: { "src/core/note.ts": { mutants: [mutant("lri4646151", 24, "Survived")] } } }
-    const killed = { ...survived, files: { "src/core/note.ts": { mutants: [mutant("lri4646151", 24, "Killed", ["a.test.ts#一"])] } } }
-    expect(reviewRechecked(base, current, ["lri4646151"], [killed, rerun])).toEqual([
-      `::error file=src/core/note.ts,line=24,title=テストが弱くなった::変わっていないコードのミュータントlri4646151（StringLiteralで""に置き換え）を、前は「src/core/note.test.ts#formatDate > 年が3桁なら0で埋める」、「src/services/create-note.test.ts#createNote > 入力欄の題名でノートを作り、開いて知らせる」が検出していましたが、前の結果を使わずにもう一度実行すると、どのテストも検出しませんでした。${regressionAdvice}`
-    ])
-    expect(reviewRechecked(base, current, ["lri4646151"], [killed, killed])).toEqual([])
-  })
-
-  it("snapshotの行から、ミュータントごとの関数の中身のハッシュを読む", () => {
+  it("基準で検出したテストに消したテストを含み、今回確かめていない（使い回したか実行していない）ものを選ぶ", () => {
     expect(
-      scopeHashes({
+      unselectedCandidates(
+        base,
+        current,
+        baseRows,
+        new Map([
+          ["top", row("Killed")],
+          ["other", row("Killed")]
+        ])
+      )
+    ).toEqual(["top"])
+    expect(unselectedCandidates(base, current, baseRows, new Map([["top", row("Pending")]]))).toEqual(["top"])
+    // 今は無いミュータント（ファイルごと消したなど）は、実行し直せないので選ばない。
+    expect(unselectedCandidates(base, current, baseRows, new Map())).toEqual([])
+  })
+
+  it("--kill-matrixで実行し直した「検出した」、関数の中身が変わったもの、mutatorが報告したものは選ばない", () => {
+    expect(unselectedCandidates(base, current, baseRows, new Map([["top", row("Killed", true)]]))).toEqual([])
+    expect(unselectedCandidates(base, current, baseRows, new Map([["top", row("Killed", false, "changed")]]))).toEqual([])
+    expect(
+      unselectedCandidates(
+        base,
+        { ...current, findings: [{ kind: "detectionRegression", key: "top" }] },
+        baseRows,
+        new Map([["top", row("Killed")]])
+      )
+    ).toEqual([])
+  })
+
+  it("実行し直して検出されなければテストを弱めた変更、想定外の状態も失敗、検出されれば何も出さない", () => {
+    const rerun = (status: string) => ({ ...report([]), files: { "src/core/word.ts": { mutants: [mutant("top", 1, status)] } } })
+    expect(reviewUnselected(base, ["top"], rerun("Survived"))).toEqual([
+      `::error file=src/core/word.ts,line=1,title=テストが弱くなった::変わっていないコードのミュータントtop（StringLiteralで""に置き換え）を、前は「${killer}」が検出していましたが、差分の実行で選ばれなかったため実行し直すと、どのテストも検出しませんでした。${regressionAdvice}`
+    ])
+    expect(reviewUnselected(base, ["top"], rerun("Pending"))).toEqual([
+      "::error file=src/core/word.ts,line=1,title=実行し直しの結果が想定外::ミュータントtopを実行し直した結果が「Pending」でした。テストが弱くなったかを確かめられないので失敗にします。"
+    ])
+    expect(reviewUnselected(base, ["top"], report([]))[0]).toContain("「結果なし」")
+    expect(reviewUnselected(base, ["top"], rerun("Killed"))).toEqual([])
+    expect(reviewUnselected(base, ["top"], rerun("Timeout"))).toEqual([])
+  })
+
+  it("snapshotの行から、関数の中身のハッシュと状態と--kill-matrixの印を読む", () => {
+    expect(
+      snapshotRows({
         format: 2,
         rows: [
-          ["lri4646151", 0, 4, "1juwxkiot46", "Killed", [], []],
+          ["a", 0, 4, "h1", "Killed", [], [], 1.5, 0, 1],
+          ["b", 0, 4, "h2", "Survived", [], []],
           [1, 2]
         ]
       })
-    ).toEqual(new Map([["lri4646151", "1juwxkiot46"]]))
+    ).toEqual(
+      new Map([
+        ["a", { scopeHash: "h1", status: "Killed", matrix: true }],
+        ["b", { scopeHash: "h2", status: "Survived", matrix: false }]
+      ])
+    )
+  })
+})
+
+describe("reviewNotRun", () => {
+  it("実行しなかったミュータントがあれば失敗にする", () => {
+    expect(reviewNotRun("score: 100%\nnot run: 3 over the time budget (--time-budget)\n")).toEqual([
+      "::error title=実行しなかったミュータントがある::差分の実行で、実行しなかったミュータントがあります（3 over the time budget (--time-budget)）。テストが弱くなったかを確かめきれないので失敗にします。mutator.config.*のtimeBudgetやmutantsPerLineを外してください。"
+    ])
+    expect(reviewNotRun("score: 100%\n")).toEqual([])
+  })
+})
+
+describe("reviewTrackedMutator", () => {
+  it(".mutatorが追跡されていたら失敗にする", () => {
+    expect(reviewTrackedMutator([".mutator/snapshot.json", ".mutator/scopes/a.json"])).toEqual([
+      "::error file=.mutator/snapshot.json,title=.mutatorが追跡されている::.mutatorの中のファイル（2件）がGitで追跡されています。.mutatorは実行のたびに作り直す結果なので、git rm -r --cached .mutatorで追跡を外してください。"
+    ])
+    expect(reviewTrackedMutator([])).toEqual([])
   })
 })

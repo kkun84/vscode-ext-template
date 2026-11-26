@@ -59,22 +59,24 @@ jobs:
       # 今は検出できない）だけ。PRでは、pre-pushと同じscripts/mutation-diff.tsが、PRの分岐点のコミットで
       # 全件を実行して比べる基準をその場で作り、変更した行と、変更したテストが確かめるコードのミュータントを
       # 実行して判定する。前回の結果をキャッシュで引き継がないので、キャッシュが消えても判定は止まらず、
-      # mainに入った変更が後のPRを落とし続けることもない。--kill-matrixで、何も検出しない新しいテストも警告する。
+      # mainに入った変更が後のPRを落とし続けることもない。
       # package.jsonのscriptsを書き換えるだけで判定を外せないように、スクリプトを直接呼ぶ。
       # 基準のrefが無ければ失敗にする（--skip-without-baseは付けない）。
       - name: Mutation tests (changed lines)
         if: github.event_name == 'pull_request'
-        run: node scripts/mutation-diff.ts "origin/${GITHUB_BASE_REF}" --kill-matrix
+        run: node scripts/mutation-diff.ts "origin/${GITHUB_BASE_REF}"
       # 一時的なGitリポジトリで、何も変えなければ成功し、テストを消せば失敗することを確かめる。
       # Dependabotがmutatorを上げたPRでも、判定が黙って外れていないことが分かる。
       - name: Mutation tests (self-test of the check)
         if: ${{ !cancelled() && steps.install.conclusion == 'success' }}
         run: node scripts/mutation-diff-selftest.ts
       # 全件で全体のスコアを出し、ジョブの概要に書く。上の判定が失敗しても、スコアは出す。
+      # 判定が残した.mutatorを使い回さないように、消してから全件を実行する。
       # 警告は上のステップに任せるので、GITHUB_ACTIONSを空にして出さない。
       - name: Mutation tests (all)
         if: ${{ !cancelled() && steps.install.conclusion == 'success' }}
         run: |
+          rm -rf .mutator
           GITHUB_ACTIONS='' pnpm mutation | tee "$RUNNER_TEMP/mutation.txt"
           {
             echo "### ミューテーションテスト（全件）"

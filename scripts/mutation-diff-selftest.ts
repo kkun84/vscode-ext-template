@@ -3,8 +3,11 @@
 // 1分ほどかかるので、pnpm checkには入れない。
 //
 // 手順: このリポジトリをcloneし、今の作業ツリーの判定のスクリプトを入れ、小さな見本のコードとテストだけを
-// 対象にした設定でコミットする。そのコミットをorigin/mainとする。何も変えずに動かすと終了コード0で、
-// 見本のテストを1つ消して動かすと、テストが弱くなったとして終了コード1で終わることを確かめる。
+// 対象にした設定でコミットする。そのコミットをorigin/mainとする。次の3つを確かめる。
+// - 何も変えずに動かすと、終了コード0で終わる
+// - 関数の中を確かめるテストを1つ消すと、テストが弱くなったとして終了コード1で終わる
+// - モジュールの直下の正規表現を確かめるアサーションを消すと、終了コード1で終わる。このミュータントは
+//   mutatorの差分の実行に選ばれないので、mutation-diff.tsが実行し直して見つける
 import { spawnSync } from "node:child_process"
 import { copyFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -38,11 +41,15 @@ const pnpm = (args: ReadonlyArray<string>, cwd: string): void => {
   }
 }
 
-const sample = `export const clamp = (value: number, max: number): number => (value > max ? max : value)
+const sample = `const WORD = /^[a-z]+$/u
+
+export const clamp = (value: number, max: number): number => (value > max ? max : value)
+
+export const isWord = (text: string): boolean => WORD.test(text)
 `
 
 const tests = `import { expect, it } from "vitest"
-import { clamp } from "./selftest-sample.ts"
+import { clamp, isWord } from "./selftest-sample.ts"
 
 it("上限を超えたら上限にする", () => {
   expect(clamp(5, 3)).toBe(3)
@@ -50,6 +57,13 @@ it("上限を超えたら上限にする", () => {
 
 it("上限以下ならそのまま返す", () => {
   expect(clamp(2, 3)).toBe(2)
+})
+
+it("英小文字だけなら単語とみなす", () => {
+  expect(isWord("abc")).toBe(true)
+  expect(isWord("ab1")).toBe(false)
+  expect(isWord("1abc")).toBe(false)
+  expect(isWord("")).toBe(false)
 })
 `
 
@@ -104,19 +118,31 @@ try {
   const diff = (): { readonly status: number | null; readonly output: string } =>
     run(process.execPath, [join(repo, "scripts/mutation-diff.ts"), "origin/main"], repo)
   const unchanged = { name: "何も変えない", ...diff() }
-  writeFileSync(join(repo, "src/core/selftest-sample.test.ts"), tests.slice(0, tests.indexOf('\nit("上限以下なら')))
-  const weakened = { name: "テストを1つ消す", ...diff() }
-  const cases = [unchanged, weakened]
+  const without = (name: string): string => {
+    const start = tests.indexOf(`\nit("${name}`)
+    const end = tests.indexOf("\n})\n", start) + "\n})\n".length
+    return tests.slice(0, start) + tests.slice(end)
+  }
+  writeFileSync(join(repo, "src/core/selftest-sample.test.ts"), without("上限以下なら"))
+  const weakened = { name: "関数の中を確かめるテストを消す", ...diff() }
+  // テストは残し、アサーションだけを消す。テストを消すとmutatorが自分で見つけるので、この形で確かめる。
+  writeFileSync(
+    join(repo, "src/core/selftest-sample.test.ts"),
+    tests.replace('  expect(isWord("ab1")).toBe(false)\n  expect(isWord("1abc")).toBe(false)\n  expect(isWord("")).toBe(false)\n', "")
+  )
+  const topLevel = { name: "モジュールの直下を確かめるアサーションを消す", ...diff() }
+  const cases = [unchanged, weakened, topLevel]
   for (const result of cases) {
     process.stdout.write(`--- ${result.name}: 終了コード${result.status}\n${result.output}\n`)
   }
   const passed = check(cases, [
     { status: 0, text: "テストが弱くなった箇所: 0件" },
-    { status: 1, text: "title=テストが弱くなった::" }
+    { status: 1, text: "title=テストが弱くなった::" },
+    { status: 1, text: "差分の実行で選ばれなかったため実行し直すと" }
   ])
   process.stdout.write(
     passed
-      ? "判定の自己検査: 何も変えなければ成功し、テストを消せば失敗しました。\n"
+      ? "判定の自己検査: 何も変えなければ成功し、テストやアサーションを消せば失敗しました。\n"
       : "::error title=判定の自己検査が失敗した::何も変えなければ成功し、テストを消せば失敗する、を満たしませんでした。mutatorを上げたときは、レポートの形と判定（scripts/mutation-report.ts）を合わせてください。\n"
   )
   process.exitCode = passed ? 0 : 1

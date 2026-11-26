@@ -1,10 +1,10 @@
 // 基準のrefとの差分をミューテーションテストし、テストを弱めた変更があれば終了コード1で終わる。
 // pre-push（pnpm mutation:diff）とCIのPRで同じものを動かす。判定はmutation-report.tsにある。
 //
-// 使い方: node scripts/mutation-diff.ts [基準のref] [--kill-matrix] [--skip-without-base]
+// 使い方: node scripts/mutation-diff.ts [基準のref] [--skip-without-base]
 // - 基準のrefの既定はorigin/main
-// - --kill-matrixを付けると、何も検出しない新しいテスト（newTestNoKills）も見つける。ミュータントごとに
-//   テストを全部動かすので、テストを変えたときは遅くなる。CIだけで付ける
+// - 差分の実行には、いつも--kill-matrixを付ける。前の「検出した」を使い回さず実行し直させるためで、
+//   何も検出しない新しいテスト（newTestNoKills）も見つかる
 // - --skip-without-baseを付けると、基準のrefが無いとき（雛形から作った直後のcloneなど）とGitの外では
 //   何もしない。手元のpre-pushだけで付ける。CIで基準が無いのは設定の誤りなので、失敗にする
 // 知らない指定は、終了コード2で止める。
@@ -44,15 +44,18 @@ import {
   MutationReport,
   parseOptions,
   reviewBaselineFailure,
-  recheckCandidates,
   reviewDroppedSources,
   reviewDroppedTests,
   reviewFindings,
-  reviewRechecked,
+  reviewNotRun,
+  reviewTrackedMutator,
+  reviewUnselected,
   reviewSettingChanges,
   reviewSkippedTests,
   reviewUnreadableReport,
-  scopeHashes
+  MUTATOR_CONFIG_FILES,
+  snapshotRows,
+  unselectedCandidates
 } from "./mutation-report.ts"
 
 const root = resolve(import.meta.dirname, "..")
@@ -223,7 +226,8 @@ const buildBaseline = async (base: string, worktree: string, temporary: string, 
   if (!baseConfigs.includes(baseVitest)) {
     writeFileSync(join(worktree, BASE_CONFIG_DIR, baseVitest), "export default {}\n")
   }
-  const baseMutator = baseConfigs.find((name) => name.startsWith("mutator."))
+  // mutatorが探すのと同じ順で、最初に見つかった設定を使う。
+  const baseMutator = MUTATOR_CONFIG_FILES.find((name) => baseConfigs.includes(name))
   const scope = {
     baseTests: collectedTests(worktree, temporary, join(worktree, BASE_CONFIG_DIR, baseVitest)),
     baseSources: await mutatedSources(worktree, baseMutator === undefined ? undefined : join(worktree, BASE_CONFIG_DIR, baseMutator))
@@ -280,74 +284,58 @@ const loadReport = (path: string): { readonly report?: MutationReport; readonly 
 
 const readJson = (path: string): unknown => JSON.parse(readFileSync(path, "utf8"))
 
-// もう一度実行する回数。負荷で関係の無いテストが落ちて「検出した」になる見逃しは、続けて起きにくい。
-const RECHECKS = 2
-
 /**
- * mutatorが前の結果を使い回して「検出した」としたミュータントを、前の結果を使わずに実行し直す
- *（理由はmutation-report.tsのrecheckCandidates）。.mutatorを退けてから--onlyで実行し、終わったら戻す。
+ * 差分の実行で選ばれず、前の「検出した」が残ったミュータントを実行し直す（理由はmutation-report.tsの
+ * unselectedCandidates）。.mutatorを退けてから--only --kill-matrixで実行し、終わったら戻す。
  */
-const recheck = (current: MutationReport, temporary: string): ReadonlyArray<string> => {
-  const baseReport = loadReport(join(temporary, "base-report.json")).report
-  if (baseReport === undefined || !existsSync(join(temporary, "base-snapshot.json")) || !existsSync(join(root, ".mutator/snapshot.json"))) {
-    return []
+const unreadable = (path: string, detail: string): ReadonlyArray<string> => [reviewUnreadableReport(path, detail)]
+
+const checkUnselected = (current: MutationReport, temporary: string): ReadonlyArray<string> => {
+  const baseReport = loadReport(join(temporary, "base-report.json"))
+  if (baseReport.report === undefined) {
+    return unreadable("基準のレポート", baseReport.error ?? "ありません。")
   }
-  const keys = recheckCandidates(
-    baseReport,
-    current,
-    scopeHashes(readJson(join(temporary, "base-snapshot.json"))),
-    scopeHashes(readJson(join(root, ".mutator/snapshot.json")))
-  )
+  let keys: ReadonlyArray<string>
+  try {
+    keys = unselectedCandidates(
+      baseReport.report,
+      current,
+      snapshotRows(readJson(join(temporary, "base-snapshot.json"))),
+      snapshotRows(readJson(join(root, ".mutator/snapshot.json")))
+    )
+  } catch (error) {
+    return unreadable("基準か今の.mutator/snapshot.json", error instanceof Error ? error.message : String(error))
+  }
   if (keys.length === 0) {
     return []
   }
-  say(`前の結果を使い回したミュータント${keys.length}件を、前の結果を使わずに${RECHECKS}回実行し直します。`)
+  say(`差分の実行で選ばれなかったミュータント${keys.length}件を、実行し直します。`)
   const held = join(temporary, "held-mutator")
+  const directory = join(temporary, "unselected")
   cpSync(join(root, ".mutator"), held, { recursive: true })
-  const reruns: MutationReport[] = []
   try {
-    for (const attempt of Array.from({ length: RECHECKS }, (_, index) => index + 1)) {
-      rmSync(join(root, ".mutator"), { recursive: true, force: true })
-      const directory = join(temporary, `recheck-${attempt}`)
-      const rerun = run(
-        process.execPath,
-        [mutatorCli(root), ...keys.flatMap((key) => ["--only", key]), "--reporter", "json", "--report-dir", directory],
-        root
-      )
-      const loaded = loadReport(join(directory, "mutation.json"))
-      if (!rerun.ok || loaded.report === undefined) {
-        say(tail(rerun.output))
-        return [reviewUnreadableReport(join(directory, "mutation.json"), loaded.error ?? "実行し直しに失敗しました。")]
-      }
-      reruns.push(loaded.report)
+    rmSync(join(root, ".mutator"), { recursive: true, force: true })
+    const rerun = run(
+      process.execPath,
+      [mutatorCli(root), ...keys.flatMap((key) => ["--only", key]), "--kill-matrix", "--reporter", "json", "--report-dir", directory],
+      root
+    )
+    const loaded = loadReport(join(directory, "mutation.json"))
+    if (!rerun.ok || loaded.report === undefined) {
+      say(tail(rerun.output))
+      return unreadable("実行し直しのレポート", loaded.error ?? "実行し直しに失敗しました。")
     }
+    return reviewUnselected(baseReport.report, keys, loaded.report)
   } finally {
     rmSync(join(root, ".mutator"), { recursive: true, force: true })
     cpSync(held, join(root, ".mutator"), { recursive: true })
   }
-  return reviewRechecked(baseReport, current, keys, reruns)
 }
 
-const judge = async (
-  base: string,
-  scope: Scope,
-  temporary: string,
-  setupFiles: ReadonlyArray<string>,
-  killMatrix: boolean
-): Promise<0 | 1> => {
+const judge = async (base: string, scope: Scope, temporary: string, setupFiles: ReadonlyArray<string>): Promise<0 | 1> => {
   const diff = run(
     process.execPath,
-    [
-      mutatorCli(root),
-      "--since",
-      base,
-      "--include-test-changes",
-      ...(killMatrix ? ["--kill-matrix"] : []),
-      "--reporter",
-      "text",
-      "--reporter",
-      "json"
-    ],
+    [mutatorCli(root), "--since", base, "--include-test-changes", "--kill-matrix", "--reporter", "text", "--reporter", "json"],
     root
   )
   process.stdout.write(diff.output)
@@ -370,18 +358,20 @@ const judge = async (
     loaded.error === undefined
       ? reviewFindings(loaded.report, reportPath)
       : { lines: [reviewUnreadableReport(reportPath, loaded.error)], exitCode: 1 as const }
-  const rechecked = loaded.report === undefined ? [] : recheck(loaded.report, temporary)
+  const unselected = loaded.report === undefined ? [] : checkUnselected(loaded.report, temporary)
+  const notRun = reviewNotRun(diff.output)
   say(
     [
       ...reviewSettingChanges(changed, setupFiles),
       ...reviewSkippedTests(diff.output),
       ...droppedTests,
       ...droppedSources,
-      ...rechecked,
+      ...notRun,
+      ...unselected,
       ...review.lines
     ].join("\n")
   )
-  return droppedTests.length > 0 || droppedSources.length > 0 || rechecked.length > 0 ? 1 : review.exitCode
+  return droppedTests.length > 0 || droppedSources.length > 0 || notRun.length > 0 || unselected.length > 0 ? 1 : review.exitCode
 }
 
 // 同じ作業ツリーで2つ同時に動かすと、.mutatorを取り合ってmutatorが落ちる。Gitの管理ディレクトリに
@@ -414,7 +404,16 @@ const isAlive = (pid: number): boolean => {
   }
 }
 
-const withBaseline = async (ref: string, killMatrix: boolean): Promise<number> => {
+const withBaseline = async (ref: string): Promise<number> => {
+  const tracked = reviewTrackedMutator(
+    git("ls-files", "--", ".mutator")
+      .output.split("\n")
+      .filter((file) => file !== "")
+  )
+  if (tracked.length > 0) {
+    say(tracked.join("\n"))
+    return 1
+  }
   const mergeBase = git("merge-base", ref, "HEAD")
   if (!mergeBase.ok) {
     say(
@@ -437,7 +436,7 @@ const withBaseline = async (ref: string, killMatrix: boolean): Promise<number> =
       git("worktree", "remove", "--force", worktree)
       git("worktree", "prune")
     }
-    return await judge(base, scope, temporary, setupFiles, killMatrix)
+    return await judge(base, scope, temporary, setupFiles)
   } catch (error) {
     if (!(error instanceof BaselineFailure)) {
       throw error
@@ -452,7 +451,7 @@ const withBaseline = async (ref: string, killMatrix: boolean): Promise<number> =
 const main = async (): Promise<number> => {
   const options = parseOptions(process.argv.slice(2))
   if (typeof options === "string") {
-    process.stderr.write(`${options}\n使い方: node scripts/mutation-diff.ts [基準のref] [--kill-matrix] [--skip-without-base]\n`)
+    process.stderr.write(`${options}\n使い方: node scripts/mutation-diff.ts [基準のref] [--skip-without-base]\n`)
     return 2
   }
   if (!git("rev-parse", "--verify", "--quiet", `${options.ref}^{commit}`).ok) {
@@ -475,7 +474,7 @@ const main = async (): Promise<number> => {
     return 1
   }
   try {
-    return await withBaseline(options.ref, options.killMatrix)
+    return await withBaseline(options.ref)
   } finally {
     rmSync(lock, { force: true })
   }

@@ -221,8 +221,10 @@ const isMutatorSetting = (file: string): boolean => /^mutator\.config\.[^/]+$/u.
 // Vitestの設定と、setupFilesやglobalSetupは、expectを無力化するなどして、全部のテストを黙らせられる。
 const isTestSetting = (file: string, setupFiles: ReadonlySet<string>): boolean =>
   /^vitest\.config\.[^/]+$/u.test(file) || setupFiles.has(file)
-// 判定の仕組みそのもの。
-const isJudge = (file: string): boolean => file === "scripts/mutation-diff.ts" || file === "scripts/mutation-report.ts"
+// 判定の仕組みそのものと、それを呼ぶ所。
+const isJudge = (file: string): boolean =>
+  ["scripts/mutation-diff.ts", "scripts/mutation-report.ts", "package.json", "lefthook.yml"].includes(file) ||
+  file.startsWith(".github/workflows/")
 
 const settingChange = (file: string, setupFiles: ReadonlySet<string>): Annotation | undefined => {
   if (isMutatorSetting(file)) {
@@ -246,7 +248,7 @@ const settingChange = (file: string, setupFiles: ReadonlySet<string>): Annotatio
       level: "warning",
       title: "テストを弱めた変更の判定が変わった",
       file,
-      message: `${file}が変わりました。判定を書き換えると、テストを弱めた変更を通せます。人が確かめてください。`
+      message: `${file}が変わりました。判定のスクリプトや、それを呼ぶ所（package.jsonのscripts、lefthook.yml、ワークフロー）を書き換えると、テストを弱めた変更を通せます。人が確かめてください。`
     }
   }
   return undefined
@@ -305,13 +307,12 @@ export const reviewUnreadableReport = (path: string, detail: string): string =>
 
 export interface Options {
   readonly ref: string
-  readonly killMatrix: boolean
   readonly skipWithoutBase: boolean
 }
 
 /** mutation-diff.tsの引数を読む。知らない指定は黙って無視せず、理由を返す。 */
 export const parseOptions = (argv: ReadonlyArray<string>): Options | string => {
-  const unknown = argv.filter((arg) => arg.startsWith("-") && arg !== "--kill-matrix" && arg !== "--skip-without-base")
+  const unknown = argv.filter((arg) => arg.startsWith("-") && arg !== "--skip-without-base")
   const refs = argv.filter((arg) => !arg.startsWith("-"))
   if (unknown.length > 0) {
     return `知らない指定です: ${unknown.join(" ")}`
@@ -321,88 +322,140 @@ export const parseOptions = (argv: ReadonlyArray<string>): Options | string => {
   }
   return {
     ref: refs[0] ?? "origin/main",
-    killMatrix: argv.includes("--kill-matrix"),
     skipWithoutBase: argv.includes("--skip-without-base")
   }
 }
 
-// テストを弱めた変更の見逃しを防ぐ、もう一度の実行。
+// 差分の実行で選ばれないミュータントの確かめ。
 //
-// mutatorは、前に検出したテストのどれかが変わっていなければ、前の「検出した」をそのまま使う。負荷の高い
-// ときに、そのミュータントと関係の無いテストがたまたま落ちると、基準でそのテストも「検出した」テストに
-// 数えられる。すると、本当に検出していたテストを弱めても、変わっていない方のテストを理由に前の結果が使われ、
-// 見逃す（実測で、基準の結果に関係の無いテストが検出したテストとして並んだ）。そこで、基準で検出した
-// テストに、変えたか消したテストと、変わっていないテストの両方を含み、今も検出したことになっている
-// ミュータントを、前の結果を使わずにもう一度実行して確かめる。検出したテストが全部変わったものは、
-// mutatorが実行し直すので要らない。
+// mutatorの--since --include-test-changesは、変えたテストが届くミュータントを選んで実行する。モジュールの
+// 直下にある正規表現など、読み込みの時に一度だけ動くコードのミュータントは、どのテストが届くかが記録されず
+//（coveredByが空）、選ばれない。すると、それを検出していたテストを弱めても、前の「検出した」が残る。
+// そこで、基準で検出したテストに変えたか消したテストを含み、関数の中身が変わっておらず、今回の実行で
+// 確かめられていない（--kill-matrixで実行し直した「検出した」ではない）ミュータントを、--onlyで実行し直す。
+// 範囲の中の「検出した」は、--kill-matrixを付けるとmutatorが必ず実行し直す
+//（node_modules/@mizchi/mutator-coreのsrc/plan.tsのreuse）。
 
-const DETECTED: ReadonlySet<string> = new Set(["Killed", "Timeout"])
 const UNDETECTED: ReadonlySet<string> = new Set(["Survived", "NoCoverage"])
+const DETECTED: ReadonlySet<string> = new Set(["Killed", "Timeout"])
 
 const mutants = (report: MutationReport): ReadonlyMap<string, MutantRecord> =>
   new Map(Object.values(report.files).flatMap((entry) => entry.mutants.map((mutant) => [mutant.id, mutant] as const)))
 
+export interface SnapshotRow {
+  readonly scopeHash: string
+  readonly status: string
+  // --kill-matrixで実行した「検出した」。
+  readonly matrix: boolean
+}
+
 const SnapshotRows = Schema.Struct({ rows: Schema.Array(Schema.Array(Schema.Unknown)) })
 
-/** mutatorのsnapshotから、ミュータントごとの関数の中身のハッシュを読む（node_modules/@mizchi/mutator/src/snapshot.tsの行の形）。 */
-export const scopeHashes = (snapshot: unknown): ReadonlyMap<string, string> =>
+/** mutatorのsnapshotの行を読む。行の形はnode_modules/@mizchi/mutator/src/snapshot.tsのRow。 */
+export const snapshotRows = (snapshot: unknown): ReadonlyMap<string, SnapshotRow> =>
   new Map(
     Schema.decodeUnknownSync(SnapshotRows)(snapshot).rows.flatMap((row) =>
-      typeof row[0] === "string" && typeof row[3] === "string" ? [[row[0], row[3]] as const] : []
+      typeof row[0] === "string" && typeof row[3] === "string" && typeof row[4] === "string"
+        ? [[row[0], { scopeHash: row[3], status: row[4], matrix: row[9] === 1 }] as const]
+        : []
     )
   )
 
-/**
- * もう一度実行して確かめるミュータント。基準で検出され、そのときのテストに変えたか消したテストと変わっていないテストを含み、
- * 関数の中身が変わっておらず、今も検出したことになっていて、mutatorがまだテストが弱くなったと言っていないもの。
- */
-export const recheckCandidates = (
+/** 実行し直すミュータント。基準で検出したテストに変えたか消したテストを含み、関数の中身が同じで、今回確かめていないもの。 */
+export const unselectedCandidates = (
   base: MutationReport,
   current: MutationReport,
-  baseScopes: ReadonlyMap<string, string>,
-  currentScopes: ReadonlyMap<string, string>
+  baseRows: ReadonlyMap<string, SnapshotRow>,
+  currentRows: ReadonlyMap<string, SnapshotRow>
 ): ReadonlyArray<string> => {
   const touched = new Set([...(current.testChanges?.changed ?? []), ...(current.testChanges?.removed ?? [])])
   const reported = new Set(current.findings.filter((finding) => finding.kind === "detectionRegression").map((finding) => finding.key))
-  const before = mutants(base)
-  return [...mutants(current).values()]
+  return [...mutants(base).values()]
     .filter((mutant) => {
-      const old = before.get(mutant.id)
+      const before = baseRows.get(mutant.id)
+      const now = currentRows.get(mutant.id)
       return (
-        old !== undefined &&
-        old.status === "Killed" &&
-        old.killedBy.some((test) => touched.has(test)) &&
-        old.killedBy.some((test) => !touched.has(test)) &&
-        DETECTED.has(mutant.status) &&
-        !reported.has(mutant.id) &&
-        baseScopes.get(mutant.id) !== undefined &&
-        baseScopes.get(mutant.id) === currentScopes.get(mutant.id)
+        mutant.status === "Killed" &&
+        mutant.killedBy.some((test) => touched.has(test)) &&
+        before !== undefined &&
+        now !== undefined &&
+        before.scopeHash === now.scopeHash &&
+        !(now.status === "Killed" && now.matrix) &&
+        !reported.has(mutant.id)
       )
     })
     .map((mutant) => mutant.id)
 }
 
-/** もう一度実行した結果のどれかで検出されなかったミュータントを、テストを弱めた変更として失敗にする。 */
-export const reviewRechecked = (
-  base: MutationReport,
-  current: MutationReport,
-  keys: ReadonlyArray<string>,
-  reruns: ReadonlyArray<MutationReport>
-): ReadonlyArray<string> => {
+/** 実行し直した結果を判定する。検出されなければテストを弱めた変更、それ以外の想定外の状態も失敗にする。 */
+export const reviewUnselected = (base: MutationReport, keys: ReadonlyArray<string>, rerun: MutationReport): ReadonlyArray<string> => {
   const before = mutants(base)
-  const results = reruns.map((rerun) => mutants(rerun))
-  return keys
-    .filter((key) => results.some((result) => UNDETECTED.has(result.get(key)?.status ?? "")))
-    .map((key) => {
-      const located = locate(current, key)
-      return formatAnnotation({
-        level: "error",
-        title: "テストが弱くなった",
-        message: `変わっていないコードのミュータント${key}${located.change}を、前は${describeKillers(before.get(key)?.killedBy ?? [])}が検出していましたが、前の結果を使わずにもう一度実行すると、どのテストも検出しませんでした。${regressionAdvice}`,
-        ...position(located)
-      })
-    })
+  const after = mutants(rerun)
+  return keys.flatMap((key) => {
+    const status = after.get(key)?.status
+    if (status !== undefined && DETECTED.has(status)) {
+      return []
+    }
+    const located = locate(base, key)
+    return [
+      formatAnnotation(
+        status !== undefined && UNDETECTED.has(status)
+          ? {
+              level: "error",
+              title: "テストが弱くなった",
+              message: `変わっていないコードのミュータント${key}${located.change}を、前は${describeKillers(before.get(key)?.killedBy ?? [])}が検出していましたが、差分の実行で選ばれなかったため実行し直すと、どのテストも検出しませんでした。${regressionAdvice}`,
+              ...position(located)
+            }
+          : {
+              level: "error",
+              title: "実行し直しの結果が想定外",
+              message: `ミュータント${key}を実行し直した結果が「${status ?? "結果なし"}」でした。テストが弱くなったかを確かめられないので失敗にします。`,
+              ...position(located)
+            }
+      )
+    ]
+  })
 }
+
+// mutatorのtextレポーターが、実行しなかったミュータントを知らせる行（src/report.tsの"not run:"）。
+// 時間の上限（timeBudget）などで実行しなかったものがあると、判定が空になりうる。
+const NOT_RUN = /^not run: (?<detail>.+)$/mu
+
+/** 差分の実行で、実行しなかったミュータントがあれば失敗にする。 */
+export const reviewNotRun = (output: string): ReadonlyArray<string> => {
+  const detail = NOT_RUN.exec(output)?.groups?.["detail"]
+  return detail === undefined
+    ? []
+    : [
+        formatAnnotation({
+          level: "error",
+          title: "実行しなかったミュータントがある",
+          message: `差分の実行で、実行しなかったミュータントがあります（${detail}）。テストが弱くなったかを確かめきれないので失敗にします。mutator.config.*のtimeBudgetやmutantsPerLineを外してください。`
+        })
+      ]
+}
+
+/** .mutatorがGitで追跡されていたら失敗にする。追跡した結果を基準と取り違えないため。 */
+export const reviewTrackedMutator = (tracked: ReadonlyArray<string>): ReadonlyArray<string> =>
+  tracked.length === 0
+    ? []
+    : [
+        formatAnnotation({
+          level: "error",
+          title: ".mutatorが追跡されている",
+          file: tracked[0] ?? ".mutator",
+          message: `.mutatorの中のファイル（${tracked.length}件）がGitで追跡されています。.mutatorは実行のたびに作り直す結果なので、git rm -r --cached .mutatorで追跡を外してください。`
+        })
+      ]
+
+/** mutatorの設定ファイル。mutatorが探す順（node_modules/@mizchi/mutator/dist/config.jsのCONFIG_FILES）。 */
+export const MUTATOR_CONFIG_FILES = [
+  "mutator.config.ts",
+  "mutator.config.mts",
+  "mutator.config.mjs",
+  "mutator.config.js",
+  "mutator.config.json"
+]
 
 // mutatorの環境ハッシュ（node_modules/@mizchi/mutator/src/reuse.tsのenvironmentHash）に入るファイルのうち、
 // この雛形の根にありうるもの。Node.jsの版とmutatorの設定もハッシュに入る。テストランナーの設定
