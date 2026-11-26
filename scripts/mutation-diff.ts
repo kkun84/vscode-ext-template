@@ -18,9 +18,12 @@
 //
 // 基準も今の設定で作るので、設定を狭めた変更は差分に現れない。そこで、分岐点の設定で集めていたテスト
 // ファイルと、対象だったソースファイルのうち、今もあるのに今の設定から外れたものを失敗にする。
-// excludedMutatorsなどでミュータントの種類を減らした変更は、基準のコミットのミュータントを分岐点の設定と
-// 今の設定で数えて、今の設定で消えるものを求める。それを分岐点の設定で実行し直し、検出していたテストが
-// 変わっていれば失敗にする。
+// mutatorの設定、tsconfig*.json、Vitestの設定とsetupFilesのどれかが分岐点と違うときは、基準のworktreeで
+// それらを分岐点の物に戻し、今の設定の基準でKilledでないミュータントを分岐点の設定のまま実行する。そこで
+// Killedなら、設定で比べる対象から外れたもの。検出していたテストが変わっていれば、今の作業ツリーの写しを
+// 分岐点の設定に戻して実行し直し、今は検出されなければ失敗にする。
+//
+// 判定が出した注釈は最後にまとめて出し、集計の行を1回だけ出す。終了コードは、エラーの注釈の有無で決める。
 import { spawnSync } from "node:child_process"
 import {
   copyFileSync,
@@ -35,10 +38,11 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync
 } from "node:fs"
 import { tmpdir } from "node:os"
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 import { loadConfig } from "@mizchi/mutator"
 // 実行せずにミュータントを数える関数は、パッケージの入口から出ていない。mutatorの版は固定しているので、
 // 版を上げて形が変わればpnpm typecheckと自己検査（mutation-diff-selftest.ts）が落ちる。
@@ -48,10 +52,14 @@ import { Schema } from "effect"
 import { resolveConfig } from "vitest/node"
 import {
   isEnvironmentFile,
+  isSettingFile,
   missingFrom,
   MutationReport,
+  type MutatorCounts,
   parseOptions,
   pendingKeys,
+  type Recheck,
+  recheckTargets,
   reviewBaselineFailure,
   reviewDroppedMutants,
   reviewDroppedSources,
@@ -67,6 +75,7 @@ import {
   MUTATOR_CONFIG_FILES,
   snapshotDeps,
   snapshotRows,
+  summarize,
   touchedTests,
   unselectedCandidates
 } from "./mutation-report.ts"
@@ -145,11 +154,13 @@ const VitestFiles = Schema.Struct({
 })
 
 // Vitestの設定ファイルと、それが読むsetupFilesとglobalSetupも、mutatorの環境ハッシュに入る
-//（mutator-vitestのconfigFiles）。根からの相対パスで返す。根の外のものは、基準でも同じなので要らない。
-const vitestFiles = async (): Promise<{ readonly configFile: ReadonlyArray<string>; readonly setupFiles: ReadonlyArray<string> }> => {
-  const config = Schema.decodeUnknownSync(VitestFiles)(await resolveConfig({ root, watch: false }))
+//（mutator-vitestのconfigFiles）。`directory`からの相対パスで返す。その外のものは、基準でも同じなので要らない。
+const vitestFiles = async (
+  directory = root
+): Promise<{ readonly configFile: ReadonlyArray<string>; readonly setupFiles: ReadonlyArray<string> }> => {
+  const config = Schema.decodeUnknownSync(VitestFiles)(await resolveConfig({ root: directory, watch: false }))
   const pick = (files: ReadonlyArray<string>): ReadonlyArray<string> =>
-    files.map((file) => fromRoot(file)).filter((file) => insideRoot(file) && existsSync(join(root, file)))
+    files.map((file) => fromRoot(file, directory)).filter((file) => insideRoot(file) && existsSync(join(directory, file)))
   return {
     configFile: pick(config.configFile === undefined ? [] : [config.configFile]),
     setupFiles: pick([config.test?.setupFiles ?? [], config.test?.globalSetup ?? []].flat())
@@ -200,8 +211,6 @@ const mutatedSources = async (directory: string, file?: string): Promise<Readonl
 interface Scope {
   readonly baseTests: ReadonlyArray<string>
   readonly baseSources: ReadonlyArray<string>
-  // 分岐点のmutatorの設定を写したファイル。分岐点に無ければ、既定と同じ空の設定。
-  readonly baseMutatorConfig: string
 }
 
 const loadReport = (path: string): { readonly report?: MutationReport; readonly error?: string } => {
@@ -261,8 +270,7 @@ const buildBaseline = async (base: string, worktree: string, temporary: string, 
   }
   const scope = {
     baseTests: collectedTests(worktree, temporary, join(worktree, BASE_CONFIG_DIR, baseVitest)),
-    baseSources: await mutatedSources(worktree, baseMutatorConfig),
-    baseMutatorConfig
+    baseSources: await mutatedSources(worktree, baseMutatorConfig)
   }
   say(`基準のコミット${base}で、ミューテーションテストを全件実行します。`)
   const started = performance.now()
@@ -295,21 +303,11 @@ const buildBaseline = async (base: string, worktree: string, temporary: string, 
 const runOnly = (
   directory: string,
   keys: ReadonlyArray<string>,
-  reportDir: string,
-  extra: ReadonlyArray<string> = []
+  reportDir: string
 ): { readonly report?: MutationReport; readonly error?: string } => {
   const result = run(
     process.execPath,
-    [
-      mutatorCli(directory),
-      ...extra,
-      ...keys.flatMap((key) => ["--only", key]),
-      "--kill-matrix",
-      "--reporter",
-      "json",
-      "--report-dir",
-      reportDir
-    ],
+    [mutatorCli(directory), ...keys.flatMap((key) => ["--only", key]), "--kill-matrix", "--reporter", "json", "--report-dir", reportDir],
     directory
   )
   const loaded = loadReport(join(reportDir, "mutation.json"))
@@ -320,45 +318,133 @@ const runOnly = (
   return loaded
 }
 
-interface Dropped {
-  // 今の設定で消えたミュータントのキーと、そのファイル（根からのパス）。
-  readonly mutants: ReadonlyArray<{ readonly key: string; readonly file: string }>
-  // 消えたものを、基準のコミットで分岐点の設定のまま実行し直したレポート。消えたものが無ければ無い。
-  readonly report?: MutationReport
-}
-
-/** 基準のコミットのミュータントを、実行せずに数える。`configFile`を渡さなければ、今の設定で数える。 */
-const listKeys = async (worktree: string, configFile?: string): Promise<ReadonlyArray<{ readonly key: string; readonly file: string }>> => {
-  const resolved = await resolveValues(parseCli(configFile === undefined ? [] : ["--config-file", configFile]), worktree)
-  const real = realpathSync.native(worktree)
+/** 基準のコミットのミュータントを、実行せずに数える。`directory`の作業ツリーの設定で数える。 */
+const listKeys = async (directory: string): Promise<ReadonlyArray<{ readonly key: string; readonly file: string }>> => {
+  const resolved = await resolveValues(parseCli([]), directory)
+  const real = realpathSync.native(directory)
   return (await listMutants({ ...resolved.run, root: resolved.root }))
     .filter((mutant) => mutant.ignored === undefined)
     .map((mutant) => ({ key: mutant.key, file: fromRoot(mutant.file, real) }))
 }
 
-/**
- * excludedMutators、plugins、aridなどで、今の設定では消えるミュータントを求め、分岐点の設定で実行し直す。
- * 設定のキーを並べて調べず、数えたミュータントの集合で比べる。
- */
-const measureDropped = async (worktree: string, temporary: string, scope: Scope): Promise<Dropped> => {
-  const now = new Set((await listKeys(worktree)).map((mutant) => mutant.key))
-  const dropped = (await listKeys(worktree, scope.baseMutatorConfig)).filter((mutant) => !now.has(mutant.key))
-  if (dropped.length === 0) {
-    return { mutants: [] }
+// 分岐点の設定のファイル（根からのパス）と、その中身。分岐点に無ければundefined。
+type Settings = ReadonlyMap<string, string | undefined>
+
+const readIfExists = (path: string): string | undefined => (existsSync(path) ? readFileSync(path, "utf8") : undefined)
+
+/** `settings`のファイルを、`directory`の中で分岐点の物に戻す。分岐点に無ければ消す。 */
+const restoreSettings = (directory: string, settings: Settings): void => {
+  for (const [file, content] of settings) {
+    const path = join(directory, file)
+    if (content === undefined) {
+      rmSync(path, { force: true })
+    } else {
+      mkdirSync(dirname(path), { recursive: true })
+      writeFileSync(path, content)
+    }
   }
-  say(`今のmutatorの設定で消えたミュータント${dropped.length}件を、基準のコミットで分岐点の設定のまま実行します。`)
+}
+
+interface Original {
+  // 基準のコミットのミュータントのうち、今の設定の基準でKilledでないもの（今の設定で消えたものを含む）。
+  readonly candidates: ReadonlyArray<{ readonly key: string; readonly file: string }>
+  // candidatesを、基準のコミットで分岐点の設定のまま実行したレポート。
+  readonly report: MutationReport
+  readonly settings: Settings
+}
+
+/**
+ * mutatorの設定、tsconfig*.json、Vitestの設定とsetupFilesのどれかが分岐点と違えば、基準のworktreeでそれらを
+ * 分岐点の物に戻し、今の設定の基準でKilledでないミュータントを、分岐点の設定のまま実行する。どれも同じなら
+ * undefinedを返す。設定のキーを並べて調べず、結果の集合で比べる。型検査の設定でCompileErrorになったものも拾う。
+ */
+const measureOriginal = async (
+  base: string,
+  worktree: string,
+  temporary: string,
+  setupFiles: ReadonlyArray<string>
+): Promise<Original | undefined> => {
+  const atBase = (file: string): string | undefined => {
+    const shown = git("show", `${base}:${file}`)
+    return shown.ok ? shown.output : undefined
+  }
+  const names = [
+    ...readdirSync(root).filter((file) => isSettingFile(file)),
+    ...git("ls-tree", "--name-only", base)
+      .output.split("\n")
+      .filter((file) => isSettingFile(file)),
+    ...setupFiles
+  ]
+  const settings = new Map([...new Set(names)].map((file) => [file, atBase(file)] as const))
+  restoreSettings(worktree, settings)
+  // 分岐点のVitestの設定が読むsetupFilesは、worktreeでは分岐点の物のまま。今と違えば数え直す。
+  for (const file of (await vitestFiles(worktree)).setupFiles) {
+    if (!settings.has(file)) {
+      settings.set(file, atBase(file))
+    }
+  }
+  if ([...settings].every(([file, content]) => readIfExists(join(root, file)) === content)) {
+    return undefined
+  }
+  const baseReport = loadReport(join(temporary, "base-report.json")).report
+  if (baseReport === undefined) {
+    throw new BaselineFailure("基準の全件の結果を読めませんでした。")
+  }
+  const statuses = new Map(
+    Object.values(baseReport.files).flatMap((entry) => entry.mutants.map((mutant) => [mutant.id, mutant.status] as const))
+  )
+  rmSync(join(worktree, ".mutator"), { recursive: true, force: true })
+  const candidates = (await listKeys(worktree)).filter((mutant) => statuses.get(mutant.key) !== "Killed")
+  if (candidates.length === 0) {
+    return { candidates, report: { schemaVersion: "2", comparison: "available", findings: [], files: {} }, settings }
+  }
+  say(
+    `テストかmutatorの設定が分岐点と違うので、今の設定の基準でKilledでないミュータント${candidates.length}件を、基準のコミットで分岐点の設定のまま実行します。`
+  )
   const loaded = runOnly(
     worktree,
-    dropped.map((mutant) => mutant.key),
-    join(temporary, "dropped"),
-    ["--config-file", scope.baseMutatorConfig]
+    candidates.map((mutant) => mutant.key),
+    join(temporary, "original")
   )
   if (loaded.report === undefined) {
-    throw new BaselineFailure(
-      `今のmutatorの設定で消えたミュータントを、基準のコミットで分岐点の設定のまま実行できませんでした（上の出力）。${loaded.error ?? ""}`
-    )
+    throw new BaselineFailure(`基準のコミットのミュータントを、分岐点の設定のまま実行できませんでした（上の出力）。${loaded.error ?? ""}`)
   }
-  return { mutants: dropped, report: loaded.report }
+  return { candidates, report: loaded.report, settings }
+}
+
+/**
+ * 今の作業ツリーの写しを一時ディレクトリに作り、設定を分岐点の物に戻して、`keys`を--only --kill-matrixで
+ * 実行する。写すのは、追跡しているファイルと、無視していない未追跡のファイル。実行できなければ、reportを返さない。
+ */
+const recheckNow = async (keys: ReadonlyArray<string>, temporary: string, settings: Settings): Promise<Recheck> => {
+  const directory = join(temporary, "now")
+  const files = git("ls-files", "-z", "--cached", "--others", "--exclude-standard")
+    .output.split("\0")
+    .filter((file) => file !== "" && existsSync(join(root, file)) && statSync(join(root, file)).isFile())
+  for (const file of files) {
+    mkdirSync(dirname(join(directory, file)), { recursive: true })
+    copyFileSync(join(root, file), join(directory, file))
+  }
+  restoreSettings(directory, settings)
+  say(`設定で比べる対象から外れたミュータント${keys.length}件を、今の作業ツリーの写しで、分岐点の設定のまま実行し直します。`)
+  const installed = pnpm(["install", "--frozen-lockfile", "--offline", "--ignore-scripts"], directory)
+  if (!installed.ok) {
+    say(tail(installed.output))
+    return { listed: new Set(keys) }
+  }
+  let listed: ReadonlySet<string>
+  try {
+    listed = new Set((await listKeys(directory)).map((mutant) => mutant.key))
+  } catch (error) {
+    say(error instanceof Error ? error.message : String(error))
+    return { listed: new Set(keys) }
+  }
+  const existing = keys.filter((key) => listed.has(key))
+  if (existing.length === 0) {
+    return { listed }
+  }
+  const loaded = runOnly(directory, existing, join(temporary, "now-report"))
+  return loaded.report === undefined ? { listed } : { listed, report: loaded.report }
 }
 
 // 基準の全件の結果のうち、次の実行が比べる相手として読むsnapshotだけを写す。
@@ -450,13 +536,18 @@ const readTouched = (
   }
 }
 
+interface Outcome {
+  readonly lines: ReadonlyArray<string>
+  readonly counts?: MutatorCounts
+}
+
 const judge = async (
   base: string,
   scope: Scope,
   temporary: string,
   setupFiles: ReadonlyArray<string>,
-  dropped: Dropped
-): Promise<0 | 1> => {
+  original: Original | undefined
+): Promise<Outcome> => {
   const diff = run(
     process.execPath,
     [mutatorCli(root), "--since", base, "--include-test-changes", "--kill-matrix", "--reporter", "text", "--reporter", "json"],
@@ -464,8 +555,11 @@ const judge = async (
   )
   process.stdout.write(diff.output)
   if (!diff.ok) {
-    say("::error title=ミューテーションテストが失敗した::変更を入れた作業ツリーで、mutatorが失敗しました。上の出力を確かめてください。")
-    return 1
+    return {
+      lines: [
+        "::error title=ミューテーションテストが失敗した::変更を入れた作業ツリーで、mutatorが失敗しました。上の出力を確かめてください。"
+      ]
+    }
   }
   // 分岐点の設定から外れたもののうち、今もあるもの。消したファイルは、テストを弱めた変更として検出する。
   const droppedTests = reviewDroppedTests(
@@ -481,9 +575,7 @@ const judge = async (
   ].filter((file) => file !== "")
   const loaded = loadReport(join(root, reportPath))
   const review =
-    loaded.error === undefined
-      ? reviewFindings(loaded.report, reportPath)
-      : { lines: [reviewUnreadableReport(reportPath, loaded.error)], exitCode: 1 as const }
+    loaded.error === undefined ? reviewFindings(loaded.report, reportPath) : { lines: [reviewUnreadableReport(reportPath, loaded.error)] }
   const touched = readTouched(temporary, loaded.report, changed)
   const unselected =
     loaded.report === undefined
@@ -492,30 +584,28 @@ const judge = async (
         ? unreadable(SNAPSHOTS, touched)
         : checkUnselected(loaded.report, temporary, touched)
   // 対象から外したファイルのものは、上のdroppedSourcesで失敗にするので重ねない。
-  const removedFiles = new Set(droppedFiles)
-  const droppedKeys = dropped.mutants.filter((mutant) => !removedFiles.has(mutant.file)).map((mutant) => mutant.key)
   // snapshotを読めなければ、上のunselectedが失敗にする。
-  const droppedMutants =
-    dropped.report === undefined || droppedKeys.length === 0 || typeof touched === "string"
-      ? []
-      : reviewDroppedMutants(dropped.report, droppedKeys, touched)
-  const droppedFailed = droppedMutants.some((line) => line.startsWith("::error"))
-  const notRun = reviewNotRun(diff.output)
-  say(
-    [
+  const removedFiles = new Set(droppedFiles)
+  let droppedMutants: ReadonlyArray<string> = []
+  if (original !== undefined && typeof touched !== "string") {
+    const candidates = original.candidates.filter((mutant) => !removedFiles.has(mutant.file)).map((mutant) => mutant.key)
+    const targets = recheckTargets(original.report, candidates, touched)
+    const recheck = targets.length === 0 ? undefined : await recheckNow(targets, temporary, original.settings)
+    droppedMutants = reviewDroppedMutants(original.report, candidates, touched, recheck)
+  }
+  return {
+    lines: [
       ...reviewSettingChanges(changed, setupFiles),
       ...reviewSkippedTests(diff.output),
       ...droppedTests,
       ...droppedSources,
       ...droppedMutants,
-      ...notRun,
+      ...reviewNotRun(diff.output),
       ...unselected,
       ...review.lines
-    ].join("\n")
-  )
-  return droppedTests.length > 0 || droppedSources.length > 0 || droppedFailed || notRun.length > 0 || unselected.length > 0
-    ? 1
-    : review.exitCode
+    ],
+    ...(review.counts === undefined ? {} : { counts: review.counts })
+  }
 }
 
 // 同じ作業ツリーで2つ同時に動かすと、.mutatorを取り合ってmutatorが落ちる。Gitの管理ディレクトリに
@@ -564,9 +654,11 @@ const isAlive = (pid: number): boolean => {
   }
 }
 
-// 強制終了で残った一時ディレクトリと、その中のworktreeの登録を消す。作ったものと同じ名前の形のときだけ消す。
+// 強制終了で残った一時ディレクトリと、その中のworktreeの登録を消す。ロックに書いたパスを使う。
+// nix developなどでTMPDIRがシェルごとに変わっても消せるように、今のtmpdir()とは比べない。
+// 作ったものと同じ名前の形の、絶対パスのときだけ消す。
 const removeLeftovers = (temporary: string | undefined): void => {
-  if (temporary === undefined || !/^mutation-base-[^/\\]+$/u.test(relative(tmpdir(), temporary))) {
+  if (temporary === undefined || !isAbsolute(temporary) || !/^mutation-base-[^/\\]+$/u.test(basename(temporary))) {
     return
   }
   git("worktree", "remove", "--force", join(temporary, "base"))
@@ -606,28 +698,29 @@ const acquireLock = (): Lock => {
   return { path, held: createLock(path, { pid: process.pid }) }
 }
 
-const withBaseline = async (ref: string, lock: string): Promise<number> => {
+const withBaseline = async (ref: string, lock: string): Promise<Outcome> => {
   const tracked = reviewTrackedMutator(
     git("ls-files", "--", ".mutator")
       .output.split("\n")
       .filter((file) => file !== "")
   )
   if (tracked.length > 0) {
-    say(tracked.join("\n"))
-    return 1
+    return { lines: tracked }
   }
   const config = await loadConfig(root)
   const limits = reviewRunLimits(config?.config, config === undefined ? "mutator.config.*" : fromRoot(config.path))
   if (limits.length > 0) {
-    say(limits.join("\n"))
-    return 1
+    return { lines: limits }
   }
   const mergeBase = git("merge-base", ref, "HEAD")
   if (!mergeBase.ok) {
-    say(
-      reviewBaselineFailure(`${ref}とHEADの分岐点が見つかりませんでした。浅いcloneなら、履歴を取得してください（git fetch --unshallow）。`)
-    )
-    return 1
+    return {
+      lines: [
+        reviewBaselineFailure(
+          `${ref}とHEADの分岐点が見つかりませんでした。浅いcloneなら、履歴を取得してください（git fetch --unshallow）。`
+        )
+      ]
+    }
   }
   const base = mergeBase.output.trim()
   // 前回に強制終了されて残った登録を消す。
@@ -638,25 +731,31 @@ const withBaseline = async (ref: string, lock: string): Promise<number> => {
   try {
     const { configFile, setupFiles } = await vitestFiles()
     let scope: Scope
-    let dropped: Dropped
+    let original: Original | undefined
     try {
       scope = await buildBaseline(base, worktree, temporary, [...configFile, ...setupFiles])
       adoptBaseline(worktree, temporary)
-      dropped = await measureDropped(worktree, temporary, scope)
+      original = await measureOriginal(base, worktree, temporary, setupFiles)
     } finally {
       git("worktree", "remove", "--force", worktree)
       git("worktree", "prune")
     }
-    return await judge(base, scope, temporary, setupFiles, dropped)
+    return await judge(base, scope, temporary, setupFiles, original)
   } catch (error) {
     if (!(error instanceof BaselineFailure)) {
       throw error
     }
-    say(reviewBaselineFailure(error.message))
-    return 1
+    return { lines: [reviewBaselineFailure(error.message)] }
   } finally {
     rmSync(temporary, { recursive: true, force: true })
   }
+}
+
+// 判定が出した行を出し、最後に集計の行を1回だけ出す。終了コードは、エラーの注釈の有無で決める。
+const finish = (outcome: Outcome): number => {
+  const summary = summarize(outcome.lines, outcome.counts)
+  say([...outcome.lines, summary.line].join("\n"))
+  return summary.exitCode
 }
 
 const main = async (): Promise<number> => {
@@ -679,13 +778,16 @@ const main = async (): Promise<number> => {
   }
   const lock = acquireLock()
   if (!lock.held) {
-    say(
-      `::error title=ミューテーションテストが動いている::同じ作業ツリーで、別のmutation-diff.tsが動いています（ロック: ${lock.path}）。終わってから、もう一度実行してください。どれも動いていないのに止まるときは、このロックを消してください。`
-    )
-    return 1
+    return finish({
+      lines: [
+        lock.path.endsWith(".reclaim")
+          ? `::error title=ミューテーションテストが動いている::古いロックを取り直している途中の印のディレクトリ（${lock.path}）があります。別のmutation-diff.tsが取り直しているなら、終わってから、もう一度実行してください。どれも動いていないのに止まるときは、rm -r ${lock.path}でこのディレクトリを消してください。`
+          : `::error title=ミューテーションテストが動いている::同じ作業ツリーで、別のmutation-diff.tsが動いています（ロック: ${lock.path}）。終わってから、もう一度実行してください。どれも動いていないのに止まるときは、rm ${lock.path}でこのロックを消してください。`
+      ]
+    })
   }
   try {
-    return await withBaseline(options.ref, lock.path)
+    return finish(await withBaseline(options.ref, lock.path))
   } finally {
     rmSync(lock.path, { force: true })
   }

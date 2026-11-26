@@ -2,9 +2,11 @@
 // GitHub Actionsの注釈の形の行と終了コードにする。基準を作ってmutatorを動かすのはmutation-diff.ts。
 //
 // 失敗にするのは、変わっていないコードについて、前は検出できたミュータントを今は検出できない
-//（detectionRegression）ときと、基準と比べられなかったとき。比べられないのは、基準を作った後では
+//（detectionRegression）ときと、判定が自分で見つけたテストを弱めた変更（実行し直し、設定で外れたもの、
+// 集めなくなったテストなど）と、基準と比べられなかったとき。比べられないのは、基準を作った後では
 // 仕組みの故障なので、黙って通さない。何も検出しない新しいテスト（newTestNoKills）と、
 // 変更した行の検出できないミュータントは警告にする。スコアは表示だけで、この判定には使わない。
+// 終了コードは、出したエラーの注釈の有無で決める（summarize）。
 
 import { Schema } from "effect"
 
@@ -50,9 +52,16 @@ export const MutationReport = Schema.Struct({
 
 export type MutationReport = typeof MutationReport.Type
 
+/** mutatorのレポートのfindingsから数えた件数。判定が自分で見つけたものは含まない。 */
+export interface MutatorCounts {
+  readonly regressions: number
+  readonly idle: number
+  readonly gaps: number
+}
+
 export interface Review {
   readonly lines: ReadonlyArray<string>
-  readonly exitCode: 0 | 1
+  readonly counts?: MutatorCounts
 }
 
 export interface Annotation {
@@ -152,7 +161,7 @@ const unavailable: Annotation = {
 
 const guide = "node_modules/@mizchi/mutator/skills/mutation-test-loop/SKILL.md"
 
-/** 結果を判定する。`report`が無ければ、結果のファイルが無いとして失敗にする。 */
+/** mutatorのレポートのfindingsを注釈にする。`report`が無ければ、結果のファイルが無いとしてエラーにする。 */
 export const reviewFindings = (report: MutationReport | undefined, path: string): Review => {
   if (report === undefined) {
     return {
@@ -162,8 +171,7 @@ export const reviewFindings = (report: MutationReport | undefined, path: string)
           title: "ミューテーションテストの結果が無い",
           message: `${path}がありません。先にmutatorを--reporter jsonを付けて実行してください。`
         })
-      ],
-      exitCode: 1
+      ]
     }
   }
   const of = (kind: string): ReadonlyArray<Finding> => report.findings.filter((finding) => finding.kind === kind)
@@ -179,14 +187,35 @@ export const reviewFindings = (report: MutationReport | undefined, path: string)
   return {
     lines: [
       ...[...(broken ? [unavailable] : []), ...regressions, ...idle, ...caveats, ...gaps].map((annotation) => formatAnnotation(annotation)),
-      `テストが弱くなった箇所: ${regressions.length}件、何も検出しない新しいテスト: ${idle.length}件、テストが検出できないミュータント: ${gaps.length}件`,
       ...(gaps.length === 0
         ? []
         : [
             `テストが検出できないミュータントは失敗にしません。テストが足りないのか、コードが要らないのかを見直してください。手順は${guide}にあります。`
           ])
     ],
-    exitCode: broken || regressions.length > 0 ? 1 : 0
+    counts: { regressions: regressions.length, idle: idle.length, gaps: gaps.length }
+  }
+}
+
+export interface Summary {
+  readonly line: string
+  readonly exitCode: 0 | 1
+}
+
+/**
+ * 判定の全体の最後に1回だけ出す集計の行と、終了コード。`lines`は判定が出したすべての行で、エラーと警告の
+ * 注釈を数える。`counts`は、mutatorのレポートまで進んだときだけ渡す。エラーが1件でもあれば失敗にする。
+ */
+export const summarize = (lines: ReadonlyArray<string>, counts?: MutatorCounts): Summary => {
+  const errors = lines.filter((line) => line.startsWith("::error")).length
+  const warnings = lines.filter((line) => line.startsWith("::warning")).length
+  const detail =
+    counts === undefined
+      ? ""
+      : `（うちmutatorの報告: テストが弱くなった箇所${counts.regressions}件、何も検出しない新しいテスト${counts.idle}件、テストが検出できないミュータント${counts.gaps}件）`
+  return {
+    line: `判定の結果: エラー${errors}件、警告${warnings}件${detail}。${errors > 0 ? "エラーがあるので失敗にします。" : "エラーはありません。"}`,
+    exitCode: errors > 0 ? 1 : 0
   }
 }
 
@@ -223,6 +252,8 @@ const isMutatorSetting = (file: string): boolean => /^mutator\.config\.[^/]+$/u.
 // Vitestの設定と、setupFilesやglobalSetupは、expectを無力化するなどして、全部のテストを黙らせられる。
 const isTestSetting = (file: string, setupFiles: ReadonlySet<string>): boolean =>
   /^vitest\.config\.[^/]+$/u.test(file) || setupFiles.has(file)
+// TypeScriptの設定は、mutatorの型検査（CompileError）を通して、基準と今で同じミュータントを比べる対象から外せる。
+const isTypeScriptSetting = (file: string): boolean => /^tsconfig[^/]*\.json$/u.test(file)
 // 判定の仕組みそのものと、それを呼ぶ所。
 const isJudge = (file: string): boolean =>
   ["scripts/mutation-diff.ts", "scripts/mutation-report.ts", "package.json", "lefthook.yml"].includes(file) ||
@@ -243,6 +274,14 @@ const settingChange = (file: string, setupFiles: ReadonlySet<string>): Annotatio
       title: "テストの設定が変わった",
       file,
       message: `${file}が変わりました。テストの設定と準備のファイルは、expectを無力化するなどして、テストを弱めずに判定を外せます。人が確かめてください。`
+    }
+  }
+  if (isTypeScriptSetting(file)) {
+    return {
+      level: "warning",
+      title: "TypeScriptの設定が変わった",
+      file,
+      message: `${file}が変わりました。型の合わないミュータントはCompileErrorになって比べる対象から外れるので、検査する範囲が狭まっていないかを確かめてください。`
     }
   }
   if (isJudge(file)) {
@@ -347,8 +386,10 @@ export const parseOptions = (argv: ReadonlyArray<string>): Options | string => {
 // を問わずに選ぶと、関係の無い変更でもほぼ全件を実行し直すことになる。
 
 const UNDETECTED: ReadonlySet<string> = new Set(["Survived", "NoCoverage"])
-// mutatorのsrc/status.tsのisDetectedに合わせる。
-const DETECTED: ReadonlySet<string> = new Set(["Killed", "Timeout", "RuntimeError"])
+// 実行し直した結果のうち、検出とみなすもの。mutatorのsrc/status.tsのisDetected（Killed、Timeout、RuntimeError）に、
+// CompileErrorを足す。前はKilledだったミュータントが、ソースの型の変更でコンパイルできなくなることがあり、
+// そのときもテストは弱くなっていない。
+const DETECTED_ON_RERUN: ReadonlySet<string> = new Set(["Killed", "Timeout", "RuntimeError", "CompileError"])
 
 const mutants = (report: MutationReport): ReadonlyMap<string, MutantRecord> =>
   new Map(Object.values(report.files).flatMap((entry) => entry.mutants.map((mutant) => [mutant.id, mutant] as const)))
@@ -432,13 +473,16 @@ export const unselectedCandidates = (
     .map((mutant) => mutant.id)
 }
 
-/** 実行し直した結果を判定する。検出されなければテストを弱めた変更、それ以外の想定外の状態も失敗にする。 */
+/**
+ * 実行し直した結果を判定する。Survived、NoCoverageはテストを弱めた変更、Ignored、Pendingと結果が無いときは
+ * 確かめられないので失敗にする。Killed、Timeout、RuntimeError、CompileErrorは検出とみなす。
+ */
 export const reviewUnselected = (base: MutationReport, keys: ReadonlyArray<string>, rerun: MutationReport): ReadonlyArray<string> => {
   const before = mutants(base)
   const after = mutants(rerun)
   return keys.flatMap((key) => {
     const status = after.get(key)?.status
-    if (status !== undefined && DETECTED.has(status)) {
+    if (status !== undefined && DETECTED_ON_RERUN.has(status)) {
       return []
     }
     const located = locate(base, key)
@@ -480,13 +524,26 @@ export const reviewNotRun = (output: string): ReadonlyArray<string> => {
       ]
 }
 
-// 実行するミュータントを減らすか、結果の置き場所を変えるmutatorの設定。基準の全件も差分の実行も
-// 途中で打ち切られたり、判定が読む結果と食い違ったりして、テストを弱めた変更を黙って通しうる。
-const RUN_LIMITS = ["since", "timeBudget", "mutantsPerLine", "shard", "reportDir"]
+// 判定と合わないmutatorの設定と、その理由。基準の全件も差分の実行も途中で打ち切られたり、判定が読む結果と
+// 食い違ったりして、テストを弱めた変更を黙って通しうる。
+// この雛形はテストランナーを既定のVitestとvitest.config.*に任せていて、判定もそれでテストを集める。
+// runnerやvitestConfigなどで別の設定を指すと、判定が集めるテストとmutatorが実行するテストが食い違う。
+const RUN_LIMITS: ReadonlyArray<readonly [string, string]> = [
+  ["since", "実行するミュータントを減らす"],
+  ["timeBudget", "実行するミュータントを減らす"],
+  ["mutantsPerLine", "実行するミュータントを減らす"],
+  ["shard", "実行するミュータントを減らす"],
+  ["reportDir", "結果の置き場所を変える"],
+  ["sharedCache", "基準と今の結果を同じ置き場所（.git/mutator）に読み書きする"],
+  ["runner", "判定がテストを集める設定と食い違う"],
+  ["vitestConfig", "判定がテストを集める設定と食い違う"],
+  ["jestConfig", "判定がテストを集める設定と食い違う"],
+  ["playwrightConfig", "判定がテストを集める設定と食い違う"]
+]
 
 /** mutatorの設定に、判定と合わない項目があれば失敗にする。`config`は読み込んだ設定、`path`はそのファイル。 */
 export const reviewRunLimits = (config: object | undefined, path: string): ReadonlyArray<string> => {
-  const found = RUN_LIMITS.filter((key) => config !== undefined && Object.hasOwn(config, key))
+  const found = RUN_LIMITS.filter(([key]) => config !== undefined && Object.hasOwn(config, key))
   return found.length === 0
     ? []
     : [
@@ -494,7 +551,7 @@ export const reviewRunLimits = (config: object | undefined, path: string): Reado
           level: "error",
           title: "判定と合わないmutatorの設定",
           file: path,
-          message: `${path}に${found.join("、")}があります。実行するミュータントを減らすか、結果の置き場所を変えるので、テストを弱めた変更を確かめきれません。外してください。`
+          message: `${path}に${found.map(([key, reason]) => `${key}（${reason}）`).join("、")}があります。テストを弱めた変更を確かめきれないので、外してください。`
         })
       ]
 }
@@ -506,54 +563,131 @@ export const pendingKeys = (report: MutationReport): ReadonlyArray<string> =>
 // 警告に並べるミュータントの数。設定で種類ごと外すと数百件になりうる。
 const LISTED = 5
 
+const listed = (keys: ReadonlyArray<string>): string => `${keys.slice(0, LISTED).join("、")}${keys.length > LISTED ? "など" : ""}`
+
+// 設定の変更とテストの変更を同じPRに入れたときの直し方。
+const splitAdvice = "テストを弱めていないのに失敗するときは、設定の変更を別のPRに分けてください。"
+
 /**
- * 今の設定で消えたミュータントを判定する。`dropped`は、基準のコミットを基準の元の設定で実行し直した
- * レポート、`keys`は今の設定で消えたもの。基準で検出していて、検出したテストに`touched`を含むものは
- * 失敗にする。テストを弱めて、そのミュータントを設定で消せば通ってしまうため。残りは警告にする。
+ * 設定で比べる対象から外れたミュータントのうち、今のテストで実行し直すもの。`original`は、基準のコミットを
+ * 分岐点の設定のまま`--only`で実行したレポート。分岐点の設定でKilledで、検出したテストに`touched`を含むもの。
  */
-export const reviewDroppedMutants = (
-  dropped: MutationReport,
-  keys: ReadonlyArray<string>,
+export const recheckTargets = (
+  original: MutationReport,
+  candidates: ReadonlyArray<string>,
   touched: (test: string) => boolean
 ): ReadonlyArray<string> => {
-  const records = mutants(dropped)
-  const failing = (key: string): boolean => {
+  const records = mutants(original)
+  return candidates.filter((key) => {
     const record = records.get(key)
-    return (
-      record === undefined || record.status === "Pending" || (DETECTED.has(record.status) && record.killedBy.some((test) => touched(test)))
-    )
+    return record !== undefined && record.status === "Killed" && record.killedBy.some((test) => touched(test))
+  })
+}
+
+/** 今の作業ツリーを分岐点の設定のまま実行し直した結果。`listed`は、そこで数えたミュータントのキー。 */
+export interface Recheck {
+  readonly listed: ReadonlySet<string>
+  readonly report?: MutationReport
+}
+
+type DroppedVerdict =
+  // 分岐点の設定でも検出していなかった。設定で外れたものではない。
+  | { readonly kind: "notDropped" }
+  | { readonly kind: "hidden" }
+  | { readonly kind: "changedSource" }
+  | { readonly kind: "weakened" }
+  | { readonly kind: "unknown"; readonly where: string; readonly status: string | undefined }
+
+// 実行し直さないものの判定。分岐点の設定で確かめられなければ失敗、Killedなら設定で外れたもの。
+const judgeOriginal = (record: MutantRecord | undefined): DroppedVerdict => {
+  if (record === undefined || record.status === "Pending") {
+    return { kind: "unknown", where: "基準のコミットで分岐点の設定のまま", status: record?.status }
   }
-  const errors = keys
-    .filter((key) => failing(key))
-    .map((key) => {
-      const record = records.get(key)
-      const located = locate(dropped, key)
-      return formatAnnotation(
-        record === undefined || record.status === "Pending"
-          ? {
-              level: "error",
-              title: "消えたミュータントを確かめられなかった",
-              message: `今の設定で消えたミュータント${key}を、基準の設定で実行し直した結果が「${record?.status ?? "結果なし"}」でした。テストが弱くなったかを確かめられないので失敗にします。`,
-              ...position(located)
-            }
-          : {
-              level: "error",
-              title: "テストを弱めて、ミュータントを設定で消した",
-              message: `ミュータント${key}${located.change}は、基準の設定では${describeKillers(record.killedBy.filter((test) => touched(test)))}が検出していましたが、今のmutatorの設定で対象から消えました。そのテストかヘルパーも変わっているので、テストを弱めた変更を設定で隠していないかを確かめられません。設定を戻すか、テストの変更と設定の変更を別のPRに分けてください。`,
-              ...position(located)
-            }
-      )
+  return record.status === "Killed" ? { kind: "hidden" } : { kind: "notDropped" }
+}
+
+// 今の作業ツリーを分岐点の設定のまま実行し直したものの判定。
+const judgeRecheck = (key: string, recheck: Recheck | undefined, rechecked: ReadonlyMap<string, MutantRecord>): DroppedVerdict => {
+  if (recheck !== undefined && !recheck.listed.has(key)) {
+    return { kind: "changedSource" }
+  }
+  const status = rechecked.get(key)?.status
+  if (status !== undefined && DETECTED_ON_RERUN.has(status)) {
+    return { kind: "hidden" }
+  }
+  return status !== undefined && UNDETECTED.has(status)
+    ? { kind: "weakened" }
+    : { kind: "unknown", where: "今の作業ツリーで分岐点の設定のまま", status }
+}
+
+/**
+ * 設定で比べる対象から外れたミュータントを判定する。`candidates`は、基準のコミットのミュータントのうち、
+ * 今の設定の基準でKilledでないもの（消えたものを含む）。`original`は、それを分岐点の設定のまま実行したレポート。
+ * 分岐点の設定でKilledだったものが、設定で外れたもの。検出したテストに`touched`を含むものは、`recheck`
+ *（今の作業ツリーを分岐点の設定のまま実行し直した結果）で今も検出されるかを見て、検出されなければ失敗にする。
+ * テストを弱めて、そのミュータントを設定で外せば通ってしまうため。残りは警告にする。
+ */
+export const reviewDroppedMutants = (
+  original: MutationReport,
+  candidates: ReadonlyArray<string>,
+  touched: (test: string) => boolean,
+  recheck?: Recheck
+): ReadonlyArray<string> => {
+  const records = mutants(original)
+  const rechecked = recheck?.report === undefined ? new Map<string, MutantRecord>() : mutants(recheck.report)
+  const targets = new Set(recheckTargets(original, candidates, touched))
+  const unknown = (key: string, where: string, status: string | undefined): string =>
+    formatAnnotation({
+      level: "error",
+      title: "設定で外れたミュータントを確かめられなかった",
+      message: `設定で比べる対象から外れたミュータント${key}を、${where}実行し直した結果が「${status ?? "結果なし"}」でした。テストが弱くなったかを確かめられないので失敗にします。${splitAdvice}`,
+      ...position(locate(original, key))
     })
-  const rest = keys.filter((key) => !failing(key))
+  const errors: Array<string> = []
+  const hidden: Array<string> = []
+  const changedSource: Array<string> = []
+  for (const key of candidates) {
+    const record = records.get(key)
+    const verdict =
+      record === undefined || record.status === "Pending" || record.status !== "Killed" || !targets.has(key)
+        ? judgeOriginal(record)
+        : judgeRecheck(key, recheck, rechecked)
+    if (verdict.kind === "unknown") {
+      errors.push(unknown(key, verdict.where, verdict.status))
+    } else if (verdict.kind === "weakened" && record !== undefined) {
+      const located = locate(original, key)
+      errors.push(
+        formatAnnotation({
+          level: "error",
+          title: "テストを弱めて、設定で比べる対象から外した",
+          message: `ミュータント${key}${located.change}は、分岐点の設定では${describeKillers(record.killedBy.filter((test) => touched(test)))}が検出していましたが、今の設定では比べる対象から外れています。今の作業ツリーを分岐点の設定のまま実行し直すと、どのテストも検出しませんでした。${regressionAdvice}${splitAdvice}`,
+          ...position(located)
+        })
+      )
+    } else if (verdict.kind === "hidden") {
+      hidden.push(key)
+    } else if (verdict.kind === "changedSource") {
+      changedSource.push(key)
+    }
+  }
   return [
     ...errors,
-    ...(rest.length === 0
+    ...(hidden.length === 0
       ? []
       : [
           formatAnnotation({
             level: "warning",
-            title: "ミュータントが設定で消えた",
-            message: `今のmutatorの設定で、基準の設定にあったミュータントが${rest.length}件消えました（${rest.slice(0, LISTED).join("、")}${rest.length > LISTED ? "など" : ""}）。それを検出していたテストは変わっていませんが、検査する範囲が狭まっていないかを確かめてください。`
+            title: "ミュータントが設定で外れた",
+            message: `今のmutatorかテストの設定で、分岐点の設定では検出していたミュータントが${hidden.length}件、比べる対象から外れました（${listed(hidden)}）。それを検出していたテストは変わっていないか、今も検出しますが、検査する範囲が狭まっていないかを確かめてください。`
+          })
+        ]),
+    ...(changedSource.length === 0
+      ? []
+      : [
+          formatAnnotation({
+            level: "warning",
+            title: "設定で外れ、ソースも変わったミュータント",
+            message: `設定で比べる対象から外れたミュータントのうち${changedSource.length}件は、ソースが変わって今の作業ツリーに無いので、テストが弱くなったかを確かめていません（${listed(changedSource)}）。ソースの変更は判定の対象外です。`
           })
         ])
   ]
@@ -590,3 +724,11 @@ const ENVIRONMENT_FILE =
 
 /** リポジトリの根にあるファイル名のうち、基準を作るときに今の作業ツリーから写すもの。 */
 export const isEnvironmentFile = (name: string): boolean => ENVIRONMENT_FILE.test(name)
+
+// 基準へ写す環境のファイルのうち、依存ではなく、テストとmutatorと型検査の振る舞いを決めるもの。
+// Vitestの設定が読むsetupFilesとglobalSetupも同じ扱いにする（mutation-diff.tsが足す）。
+// これが分岐点と違うと、基準も今と同じ設定で作るので、設定で外したミュータントが比べる対象から黙って消える。
+const SETTING_FILE = /^(?:tsconfig.*\.json|vitest\.config\..+|mutator\.config\..+)$/u
+
+/** リポジトリの根にあるファイル名のうち、分岐点と違えば、分岐点の設定に戻して数え直すもの。 */
+export const isSettingFile = (name: string): boolean => SETTING_FILE.test(name)

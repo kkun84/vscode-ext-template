@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest"
 import {
   formatAnnotation,
   isEnvironmentFile,
+  isSettingFile,
   missingFrom,
   MutationReport,
   parseOptions,
@@ -13,6 +14,7 @@ import {
   reviewDroppedTests,
   reviewFindings,
   pendingKeys,
+  recheckTargets,
   reviewDroppedMutants,
   reviewNotRun,
   reviewRunLimits,
@@ -23,6 +25,7 @@ import {
   reviewUnreadableReport,
   snapshotDeps,
   snapshotRows,
+  summarize,
   touchedTests,
   unselectedCandidates
 } from "./mutation-report.ts"
@@ -54,19 +57,20 @@ const report = (findings: MutationReport["findings"], comparison: MutationReport
 describe("mutator 0.4.5の実物のレポート", () => {
   it("テストを弱めた変更を行に付けたエラーにし、何も検出しない新しいテストを警告にして失敗する", () => {
     const review = reviewFindings(decode(fixture("mutation-report-weakened.json")), "mutation.json")
-    expect(review.exitCode).toBe(1)
     expect(review.lines).toEqual([
       `::error file=src/core/note.ts,line=24,title=テストが弱くなった::変わっていないコードのミュータントlri4646151（StringLiteralで""に置き換え）を、前は「src/core/note.test.ts#formatDate > 年が3桁なら0で埋める」が検出していましたが、今はどのテストも検出しません。${regressionAdvice}`,
-      "::warning title=何も検出しない新しいテスト::「src/core/note.test.ts#呼ぶだけ > 何も確かめない」は、どのミュータントも検出しません。振る舞いを確かめるアサーションがあるかを見直してください。",
-      "テストが弱くなった箇所: 1件、何も検出しない新しいテスト: 1件、テストが検出できないミュータント: 0件"
+      "::warning title=何も検出しない新しいテスト::「src/core/note.test.ts#呼ぶだけ > 何も確かめない」は、どのミュータントも検出しません。振る舞いを確かめるアサーションがあるかを見直してください。"
     ])
+    expect(summarize(review.lines, review.counts)).toEqual({
+      line: "判定の結果: エラー1件、警告1件（うちmutatorの報告: テストが弱くなった箇所1件、何も検出しない新しいテスト1件、テストが検出できないミュータント0件）。エラーがあるので失敗にします。",
+      exitCode: 1
+    })
   })
 
   it("変更の無いときは、何も出さずに成功する", () => {
-    expect(reviewFindings(decode(fixture("mutation-report-unchanged.json")), "mutation.json")).toEqual({
-      lines: ["テストが弱くなった箇所: 0件、何も検出しない新しいテスト: 0件、テストが検出できないミュータント: 0件"],
-      exitCode: 0
-    })
+    const review = reviewFindings(decode(fixture("mutation-report-unchanged.json")), "mutation.json")
+    expect(review).toEqual({ lines: [], counts: { regressions: 0, idle: 0, gaps: 0 } })
+    expect(summarize(review.lines, review.counts).exitCode).toBe(0)
   })
 })
 
@@ -98,7 +102,7 @@ describe("reviewFindings", () => {
       `::error title=テストが弱くなった::変わっていないコードのミュータントgoneを、前はテストが検出していましたが、今はどのテストも検出しません。${regressionAdvice}`,
       `::error file=src/core/note.ts,line=24,title=テストが弱くなった::変わっていないコードのミュータントweak（StringLiteralで""に置き換え）を、前は「a.test.ts#一」、「a.test.ts#二」が検出していましたが、今はどのテストも検出しません。${regressionAdvice}`
     ])
-    expect(review.exitCode).toBe(1)
+    expect(review.counts?.regressions).toBe(2)
   })
 
   it("失敗したときの案内は、mutator acceptで通さず、テストを戻すか足すように言う", () => {
@@ -108,8 +112,8 @@ describe("reviewFindings", () => {
 
   it("基準を作ったのに比べられなかったら、仕組みの故障として失敗する", () => {
     const review = reviewFindings(report([], "unavailable"), "mutation.json")
-    expect(review.exitCode).toBe(1)
     expect(review.lines[0]).toMatch(/^::error title=基準と比べられなかった::/u)
+    expect(summarize(review.lines, review.counts).exitCode).toBe(1)
   })
 
   it("変更した行の検出できないミュータントは、行に付けた警告にして成功する。テストを弱めたものには重ねない", () => {
@@ -126,12 +130,8 @@ describe("reviewFindings", () => {
       '::warning file=src/core/note.ts,line=3,title=テストが検出できないミュータント::ミュータントother（StringLiteralで""に置き換え）を、どのテストも検出しません。テストが足りないのか、コードが要らないのかを見直してください。どんな入力でも振る舞いが変わらない等価ミュータントだけは、mutator accept other --reason <理由>で記録できます。'
     ])
     expect(reviewFindings(report([{ kind: "mutationGap", key: "other" }]), "mutation.json")).toMatchObject({
-      lines: [
-        expect.stringMatching(/^::warning /u),
-        "テストが弱くなった箇所: 0件、何も検出しない新しいテスト: 0件、テストが検出できないミュータント: 1件",
-        expect.stringContaining("失敗にしません")
-      ],
-      exitCode: 0
+      lines: [expect.stringMatching(/^::warning /u), expect.stringContaining("失敗にしません")],
+      counts: { regressions: 0, idle: 0, gaps: 1 }
     })
   })
 
@@ -144,10 +144,9 @@ describe("reviewFindings", () => {
     ).toEqual({
       lines: [
         "::warning file=src/a.spec.ts,title=ミューテーションテストの結果を疑わせる事情::not collected",
-        "::warning title=ミューテーションテストの結果を疑わせる事情::child process",
-        "テストが弱くなった箇所: 0件、何も検出しない新しいテスト: 0件、テストが検出できないミュータント: 0件"
+        "::warning title=ミューテーションテストの結果を疑わせる事情::child process"
       ],
-      exitCode: 0
+      counts: { regressions: 0, idle: 0, gaps: 0 }
     })
   })
 
@@ -155,9 +154,33 @@ describe("reviewFindings", () => {
     expect(reviewFindings(undefined, ".mutator/report/mutation.json")).toEqual({
       lines: [
         "::error title=ミューテーションテストの結果が無い::.mutator/report/mutation.jsonがありません。先にmutatorを--reporter jsonを付けて実行してください。"
-      ],
+      ]
+    })
+  })
+})
+
+describe("summarize", () => {
+  it("判定が自分で出したエラーも数え、エラーが1件でもあれば失敗にする", () => {
+    const review = reviewFindings(report([]), "mutation.json")
+    const lines = [
+      ...reviewDroppedTests(["src/core/note.test.ts"]),
+      ...reviewNotRun("not run: 3 over the time budget (--time-budget)\n"),
+      ...reviewSettingChanges(["mutator.config.json"]),
+      ...review.lines
+    ]
+    expect(summarize(lines, review.counts)).toEqual({
+      line: "判定の結果: エラー2件、警告1件（うちmutatorの報告: テストが弱くなった箇所0件、何も検出しない新しいテスト0件、テストが検出できないミュータント0件）。エラーがあるので失敗にします。",
       exitCode: 1
     })
+  })
+
+  it("mutatorのレポートまで進まなかったときは、mutatorの件数を出さない。警告だけなら成功する", () => {
+    expect(summarize([reviewBaselineFailure("取り出せませんでした。")])).toEqual({
+      line: "判定の結果: エラー1件、警告0件。エラーがあるので失敗にします。",
+      exitCode: 1
+    })
+    expect(summarize(reviewSettingChanges(["vitest.config.ts"]), { regressions: 0, idle: 0, gaps: 0 }).exitCode).toBe(0)
+    expect(summarize([]).line).toBe("判定の結果: エラー0件、警告0件。エラーはありません。")
   })
 })
 
@@ -212,6 +235,22 @@ describe("isEnvironmentFile", () => {
   })
 })
 
+describe("isSettingFile", () => {
+  it("写す環境のファイルのうち、依存ではなく、テストとmutatorと型検査の設定を選ぶ", () => {
+    expect(
+      [
+        "package.json",
+        "pnpm-lock.yaml",
+        ".npmrc",
+        "tsconfig.json",
+        "tsconfig.build.json",
+        "vitest.config.ts",
+        "mutator.config.json"
+      ].filter((name) => isSettingFile(name))
+    ).toEqual(["tsconfig.json", "tsconfig.build.json", "vitest.config.ts", "mutator.config.json"])
+  })
+})
+
 describe("formatAnnotation", () => {
   it("注釈の区切りと改行を、値の中で符号化する", () => {
     expect(formatAnnotation({ level: "warning", title: "a:b,c", message: "100%\r\nok", file: "src/a,b:c.ts", line: 4 })).toBe(
@@ -230,7 +269,16 @@ describe("reviewSettingChanges", () => {
   })
 
   it("根にない同名のファイルや、空の行は警告しない", () => {
-    expect(reviewSettingChanges(["", "docs/mutator.config.json", "src/mutator.accepted.json", "mutator.configs"])).toEqual([])
+    expect(
+      reviewSettingChanges(["", "docs/mutator.config.json", "src/mutator.accepted.json", "mutator.configs", "e2e/tsconfig.json"])
+    ).toEqual([])
+  })
+
+  it("TypeScriptの設定が変わったら、CompileErrorで比べる対象から外れうるので警告する", () => {
+    expect(reviewSettingChanges(["tsconfig.json", "tsconfig.build.json"])).toEqual([
+      "::warning file=tsconfig.json,title=TypeScriptの設定が変わった::tsconfig.jsonが変わりました。型の合わないミュータントはCompileErrorになって比べる対象から外れるので、検査する範囲が狭まっていないかを確かめてください。",
+      "::warning file=tsconfig.build.json,title=TypeScriptの設定が変わった::tsconfig.build.jsonが変わりました。型の合わないミュータントはCompileErrorになって比べる対象から外れるので、検査する範囲が狭まっていないかを確かめてください。"
+    ])
   })
 
   it("テストの設定と準備のファイル、判定のスクリプトが変わったら、人が確かめるように警告する", () => {
@@ -362,13 +410,20 @@ describe("差分の実行で選ばれないミュータントの確かめ", () =
     expect(reviewUnselected(base, ["top"], rerun("Survived"))).toEqual([
       `::error file=src/core/word.ts,line=1,title=テストが弱くなった::変わっていないコードのミュータントtop（StringLiteralで""に置き換え）を、前は「${killer}」が検出していましたが、差分の実行で選ばれなかったため実行し直すと、どのテストも検出しませんでした。${regressionAdvice}`
     ])
+    expect(reviewUnselected(base, ["top"], rerun("NoCoverage"))[0]).toContain("title=テストが弱くなった::")
     expect(reviewUnselected(base, ["top"], rerun("Pending"))).toEqual([
       "::error file=src/core/word.ts,line=1,title=実行し直しの結果が想定外::ミュータントtopを実行し直した結果が「Pending」でした。テストが弱くなったかを確かめられないので失敗にします。"
     ])
+    expect(reviewUnselected(base, ["top"], rerun("Ignored"))[0]).toContain("title=実行し直しの結果が想定外::")
     expect(reviewUnselected(base, ["top"], report([]))[0]).toContain("「結果なし」")
     expect(reviewUnselected(base, ["top"], rerun("Killed"))).toEqual([])
     expect(reviewUnselected(base, ["top"], rerun("Timeout"))).toEqual([])
     expect(reviewUnselected(base, ["top"], rerun("RuntimeError"))).toEqual([])
+  })
+
+  it("ソースの型を変えて、前はKilledだったミュータントがコンパイルできなくなっても、検出とみなして失敗にしない", () => {
+    const rerun = { ...report([]), files: { "src/core/word.ts": { mutants: [mutant("top", 1, "CompileError")] } } }
+    expect(reviewUnselected(base, ["top"], rerun)).toEqual([])
   })
 })
 
@@ -393,13 +448,27 @@ describe("reviewTrackedMutator", () => {
 describe("reviewRunLimits", () => {
   it("実行するミュータントを減らすか、結果の置き場所を変える設定を、名前を挙げて失敗にする", () => {
     expect(reviewRunLimits({ include: ["src/**"], since: "HEAD", timeBudget: 6 }, "mutator.config.json")).toEqual([
-      "::error file=mutator.config.json,title=判定と合わないmutatorの設定::mutator.config.jsonにsince、timeBudgetがあります。実行するミュータントを減らすか、結果の置き場所を変えるので、テストを弱めた変更を確かめきれません。外してください。"
+      "::error file=mutator.config.json,title=判定と合わないmutatorの設定::mutator.config.jsonにsince（実行するミュータントを減らす）、timeBudget（実行するミュータントを減らす）があります。テストを弱めた変更を確かめきれないので、外してください。"
     ])
     expect(reviewRunLimits({ mutantsPerLine: 1, shard: "1/2", reportDir: "out" }, "m.json")[0]).toContain(
-      "mutantsPerLine、shard、reportDir"
+      "mutantsPerLine（実行するミュータントを減らす）、shard（実行するミュータントを減らす）、reportDir（結果の置き場所を変える）"
     )
     expect(reviewRunLimits({ include: ["src/**"], excludedMutators: ["Regex"] }, "mutator.config.json")).toEqual([])
     expect(reviewRunLimits(undefined, "mutator.config.*")).toEqual([])
+  })
+
+  it("基準と今で結果を共有する設定と、判定と違う設定でテストを集める設定も、失敗にする", () => {
+    expect(reviewRunLimits({ sharedCache: true }, "mutator.config.json")[0]).toContain(
+      "sharedCache（基準と今の結果を同じ置き場所（.git/mutator）に読み書きする）"
+    )
+    expect(
+      reviewRunLimits(
+        { runner: "vitest", vitestConfig: "vitest.other.ts", jestConfig: "jest.config.js", playwrightConfig: "p.ts" },
+        "mutator.config.json"
+      )[0]
+    ).toContain(
+      "runner（判定がテストを集める設定と食い違う）、vitestConfig（判定がテストを集める設定と食い違う）、jestConfig（判定がテストを集める設定と食い違う）、playwrightConfig（判定がテストを集める設定と食い違う）"
+    )
   })
 })
 
@@ -413,7 +482,7 @@ describe("pendingKeys", () => {
 
 describe("reviewDroppedMutants", () => {
   const killer = "src/core/word.test.ts#単語"
-  const dropped = {
+  const original = {
     ...report([]),
     files: {
       "src/core/word.ts": {
@@ -421,33 +490,70 @@ describe("reviewDroppedMutants", () => {
           mutant("weak", 1, "Killed", [killer]),
           mutant("kept", 2, "Killed", ["src/core/other.test.ts#変えていない"]),
           mutant("survived", 3, "Survived"),
-          mutant("pending", 4, "Pending")
+          mutant("pending", 4, "Pending"),
+          mutant("timeout", 5, "Timeout", [killer])
         ]
       }
     }
   }
+  const touched = (test: string): boolean => test === killer
+  const now = (status: string) => ({
+    listed: new Set(["weak"]),
+    report: { ...report([]), files: { "src/core/word.ts": { mutants: [mutant("weak", 1, status)] } } }
+  })
 
-  it("検出していたテストが変わっていれば失敗、変わっていなければまとめて警告にする", () => {
-    expect(reviewDroppedMutants(dropped, ["weak", "kept", "survived"], (test) => test === killer)).toEqual([
-      `::error file=src/core/word.ts,line=1,title=テストを弱めて、ミュータントを設定で消した::ミュータントweak（StringLiteralで""に置き換え）は、基準の設定では「${killer}」が検出していましたが、今のmutatorの設定で対象から消えました。そのテストかヘルパーも変わっているので、テストを弱めた変更を設定で隠していないかを確かめられません。設定を戻すか、テストの変更と設定の変更を別のPRに分けてください。`,
-      "::warning title=ミュータントが設定で消えた::今のmutatorの設定で、基準の設定にあったミュータントが2件消えました（kept、survived）。それを検出していたテストは変わっていませんが、検査する範囲が狭まっていないかを確かめてください。"
+  it("実行し直すのは、分岐点の設定でKilledで、検出したテストが変わったものだけ", () => {
+    expect(recheckTargets(original, ["weak", "kept", "survived", "pending", "timeout", "missing"], touched)).toEqual(["weak"])
+  })
+
+  it("今の作業ツリーを分岐点の設定のまま実行し直して、検出されなければ失敗にする", () => {
+    expect(reviewDroppedMutants(original, ["weak", "kept", "survived"], touched, now("Survived"))).toEqual([
+      `::error file=src/core/word.ts,line=1,title=テストを弱めて、設定で比べる対象から外した::ミュータントweak（StringLiteralで""に置き換え）は、分岐点の設定では「${killer}」が検出していましたが、今の設定では比べる対象から外れています。今の作業ツリーを分岐点の設定のまま実行し直すと、どのテストも検出しませんでした。${regressionAdvice}テストを弱めていないのに失敗するときは、設定の変更を別のPRに分けてください。`,
+      "::warning title=ミュータントが設定で外れた::今のmutatorかテストの設定で、分岐点の設定では検出していたミュータントが1件、比べる対象から外れました（kept）。それを検出していたテストは変わっていないか、今も検出しますが、検査する範囲が狭まっていないかを確かめてください。"
     ])
-    expect(reviewDroppedMutants(dropped, ["weak"], () => false)).toEqual([
-      "::warning title=ミュータントが設定で消えた::今のmutatorの設定で、基準の設定にあったミュータントが1件消えました（weak）。それを検出していたテストは変わっていませんが、検査する範囲が狭まっていないかを確かめてください。"
+    expect(reviewDroppedMutants(original, ["weak"], touched, now("NoCoverage"))[0]).toContain(
+      "title=テストを弱めて、設定で比べる対象から外した::"
+    )
+  })
+
+  it("設定とソースを同じPRで変えても、今のテストが分岐点の設定で検出すれば失敗にしない", () => {
+    for (const status of ["Killed", "Timeout", "RuntimeError", "CompileError"]) {
+      expect(reviewDroppedMutants(original, ["weak", "kept"], touched, now(status))).toEqual([
+        expect.stringContaining(
+          "::warning title=ミュータントが設定で外れた::今のmutatorかテストの設定で、分岐点の設定では検出していたミュータントが2件、比べる対象から外れました（weak、kept）。"
+        )
+      ])
+    }
+  })
+
+  it("ソースが変わって今の作業ツリーに無いものは、確かめずに警告にする", () => {
+    expect(reviewDroppedMutants(original, ["weak"], touched, { listed: new Set() })).toEqual([
+      "::warning title=設定で外れ、ソースも変わったミュータント::設定で比べる対象から外れたミュータントのうち1件は、ソースが変わって今の作業ツリーに無いので、テストが弱くなったかを確かめていません（weak）。ソースの変更は判定の対象外です。"
     ])
   })
 
-  it("実行し直した結果が無いか、実行しなかったものは、確かめられないので失敗にする", () => {
-    const lines = reviewDroppedMutants(dropped, ["pending", "missing"], () => false)
+  it("実行し直した結果が無いか、実行しなかったか、Ignoredなら、確かめられないので失敗にする", () => {
+    const lines = reviewDroppedMutants(original, ["pending", "missing"], () => false)
     expect(lines).toHaveLength(2)
-    expect(lines[0]).toContain("title=消えたミュータントを確かめられなかった::")
-    expect(lines[0]).toContain("「Pending」")
+    expect(lines[0]).toContain("title=設定で外れたミュータントを確かめられなかった::")
+    expect(lines[0]).toContain("基準のコミットで分岐点の設定のまま実行し直した結果が「Pending」")
     expect(lines[1]).toContain("「結果なし」")
+    expect(lines[1]).toContain("設定の変更を別のPRに分けてください")
+    expect(reviewDroppedMutants(original, ["weak"], touched, now("Ignored"))[0]).toContain(
+      "今の作業ツリーで分岐点の設定のまま実行し直した結果が「Ignored」"
+    )
+    expect(reviewDroppedMutants(original, ["weak"], touched, { listed: new Set(["weak"]) })[0]).toContain("「結果なし」")
+  })
+
+  it("分岐点の設定でもKilledでなかったものは、設定で外れたものに数えない", () => {
+    expect(reviewDroppedMutants(original, ["survived", "timeout"], touched)).toEqual([])
   })
 
   it("警告に並べるのは5件までにする", () => {
-    const many = { ...report([]), files: { "a.ts": { mutants: ["1", "2", "3", "4", "5", "6"].map((id) => mutant(id, 1, "Survived")) } } }
-    expect(reviewDroppedMutants(many, ["1", "2", "3", "4", "5", "6"], () => false)[0]).toContain("6件消えました（1、2、3、4、5など）")
+    const many = { ...report([]), files: { "a.ts": { mutants: ["1", "2", "3", "4", "5", "6"].map((id) => mutant(id, 1, "Killed")) } } }
+    expect(reviewDroppedMutants(many, ["1", "2", "3", "4", "5", "6"], () => false)[0]).toContain(
+      "6件、比べる対象から外れました（1、2、3、4、5など）"
+    )
   })
 })
 

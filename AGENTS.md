@@ -14,14 +14,17 @@ Effect v4で書くVS Code拡張機能の雛形です。設計は[docs/design.md]
 - `pnpm check`: lint、型検査、テストとカバレッジ、ビルド、サイズの上限、`.vsix`の中身
 - `pnpm test:e2e`: 実際のエディタを起動するE2Eテスト。Linuxでは`nix develop .#e2e`の中で`xvfb-run -a pnpm test:e2e`
 
-`src/core`か`src/services`かそのテストを変えたら、`pnpm mutation:diff`の結果も見直します。テストが検出できないミュータント（生き残りと、テストの届かないもの）があっても失敗にはなりません。テストを弱めた変更（変わっていないコードについて、前は検出できたミュータントを今は検出できない）だけは、pre-pushとCIで失敗します。
+`src/core`か`src/services`かそのテストを変えたら、`pnpm mutation:diff`の結果も見直します。テストが検出できないミュータント（生き残りと、テストの届かないもの）があっても失敗にはなりません。テストを弱めた変更（変わっていないコードについて、前は検出できたミュータントを今は検出できない）と、それを確かめられない場合は、pre-pushとCIで失敗します。最後の`判定の結果: エラーN件、警告M件`のエラーが1件でもあれば失敗です。
 
 - 検出できないミュータントは、テストが足りないのか、コードが要らないのかを判断します
 - テストを足すときは、呼び出す側から見える振る舞いを確かめます。ミュータントを落とすためだけに実装をなぞるテストは書きません
-- テストを弱めた変更で失敗したら、弱めたアサーションや消したテストを戻すか、同じ振る舞いを確かめるテストを足します。比べる相手は`origin/main`との分岐点のコミットで毎回作り直すので、`.mutator`を消しても、ブランチを切り替えても結果は変わりません
+- 「テストが弱くなった」で失敗したら、弱めたアサーションや消したテストを戻すか、同じ振る舞いを確かめるテストを足します。比べる相手は`origin/main`との分岐点のコミットで毎回作り直すので、`.mutator`を消しても、ブランチを切り替えても結果は変わりません
+- 「テストを弱めて、設定で比べる対象から外した」で失敗したら、同じように直します。テストを弱めていないなら、mutatorかテストの設定（`mutator.config.*`、`tsconfig*.json`、`vitest.config.*`、`setupFiles`、`globalSetup`）の変更を別のPRに分けます
 - 「比較の基準を作れなかった」で失敗したら、表示された原因を直します。多くは、分岐点のテストが今の依存や設定で落ちるときです
 - 「テストファイルを集めなくなった」「ミューテーションテストの対象から外れた」で失敗したら、`vitest.config.*`か`mutator.config.*`の`include`と`exclude`を戻します。テストやコードが要らないなら、設定で外さずにファイルごと消します
-- テストの設定と準備のファイル（`vitest.config.*`、`setupFiles`、`globalSetup`）、mutatorの設定、`mutator.accepted.json`、判定のスクリプト（`scripts/mutation-diff.ts`、`scripts/mutation-report.ts`）、それを呼ぶ`package.json`の`scripts`、`lefthook.yml`、`.github/workflows`を変えたPRは、人が確かめます。テストを弱めずに判定を外せるためです。PRの概要欄に、変えた理由を書きます
+- 「判定と合わないmutatorの設定」で失敗したら、挙げられた項目を`mutator.config.*`から外します
+- 「実行し直しの結果が想定外」「設定で外れたミュータントを確かめられなかった」「実行しなかったミュータントがある」「ミューテーションテストの結果を読めなかった」で失敗したら、上に表示されたmutatorの出力から原因を直します。黙って通す変更はしません
+- テストの設定と準備のファイル（`vitest.config.*`、`setupFiles`、`globalSetup`）、TypeScriptの設定（`tsconfig*.json`）、mutatorの設定、`mutator.accepted.json`、判定のスクリプト（`scripts/mutation-diff.ts`、`scripts/mutation-report.ts`）、それを呼ぶ`package.json`の`scripts`、`lefthook.yml`、`.github/workflows`を変えたPRは、人が確かめます。テストを弱めずに判定を外せるためです。PRの概要欄に、変えた理由を書きます
 - 何も検出しない新しいテストは、手元でもCIでも警告します
 - 手順は`node_modules/@mizchi/mutator/skills/mutation-test-loop/SKILL.md`に従います
 - 等価ミュータントだけを`pnpm exec mutator accept <key> --reason <理由>`で`mutator.accepted.json`に記録します。キーは`pnpm exec mutator --reporter agent`の`gaps[].key`にあります。テストを弱めた変更を通すために記録してはいけません。ミューテーションテストから外すものは、コメントではなく`mutator.config.json`の`exclude`に書きます。PRで`mutator.config.*`か`mutator.accepted.json`を変えると、CIが警告を出します

@@ -1,6 +1,6 @@
 // mutation-diff.tsを、一時的なGitリポジトリで本物のmutatorと一緒に動かして確かめる。
 // mutatorを上げたときに、判定が黙って外れていないかを見るためのもの。CIのcheck (Linux)で毎回動かす。
-// 約1分かかるので、pnpm checkには入れない。
+// 約2分かかるので、pnpm checkには入れない。
 //
 // 手順: このリポジトリをcloneし、今の作業ツリーの判定のスクリプトを入れ、小さな見本のコードとテストだけを
 // 対象にした設定でコミットする。そのコミットをorigin/mainとする。次を確かめる。
@@ -12,8 +12,11 @@
 // - mutatorの設定にsinceかtimeBudgetを足すと、名前を挙げて終了コード1で終わる
 // - excludedMutatorsでミュータントを消すだけなら警告で終了コード0、それを検出していたアサーションも
 //   消すと終了コード1で終わる
+// - excludedMutatorsでミュータントを消し、テストが読み込むソースのコメントを変えるだけなら、終了コード0で終わる
+// - tsconfig.jsonにnoUnusedParametersを足して、ミュータントをCompileErrorにし、それを検出していたテストも
+//   消すと、終了コード1で終わる。基準も今のtsconfig.jsonで作るので、mutatorの比較からは消える
 import { spawnSync } from "node:child_process"
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 
@@ -50,10 +53,13 @@ const sample = `const WORD = /^[a-z]+$/u
 export const clamp = (value: number, max: number): number => (value > max ? max : value)
 
 export const isWord = (text: string): boolean => WORD.test(text)
+
+// 式を数値に置き換えるミュータントは、引数を使わなくなるので、noUnusedParametersのときだけコンパイルできない。
+export const magnitude = (value: number): number => Math.abs(value)
 `
 
 const tests = `import { expect, it } from "vitest"
-import { clamp, isWord } from "./selftest-sample.ts"
+import { clamp, isWord, magnitude } from "./selftest-sample.ts"
 
 it("上限を超えたら上限にする", () => {
   expect(clamp(5, 3)).toBe(3)
@@ -68,6 +74,10 @@ it("英小文字だけなら単語とみなす", () => {
   expect(isWord("ab1")).toBe(false)
   expect(isWord("1abc")).toBe(false)
   expect(isWord("")).toBe(false)
+})
+
+it("絶対値を返す", () => {
+  expect(magnitude(-3)).toBe(3)
 })
 `
 
@@ -130,6 +140,15 @@ try {
   writeFileSync(join(repo, "src/core/selftest-word.test.ts"), helperTests)
   writeFileSync(join(repo, "vitest.config.ts"), vitestConfig)
   writeFileSync(join(repo, "mutator.config.json"), mutatorConfig())
+  // 分岐点では、使わない引数を許す。
+  const tsconfig = (noUnusedParameters: boolean): string => {
+    const text = readFileSync(join(root, "tsconfig.json"), "utf8")
+    if (!text.includes('"noUnusedParameters": true')) {
+      throw new Error("tsconfig.jsonにnoUnusedParameters: trueがありません。自己検査の見本を合わせてください。")
+    }
+    return text.replace('"noUnusedParameters": true', `"noUnusedParameters": ${noUnusedParameters}`)
+  }
+  writeFileSync(join(repo, "tsconfig.json"), tsconfig(false))
   must("git", ["add", "-A"], repo)
   must(
     "git",
@@ -184,19 +203,32 @@ try {
   const excluded = { name: "excludedMutatorsでミュータントを消すだけ", ...diff() }
   writeFileSync(join(repo, "src/core/selftest-sample.test.ts"), withoutWordAssertions)
   const excludedWeakened = { name: "excludedMutatorsで消し、それを検出していたアサーションも消す", ...diff() }
-  const cases = [unchanged, weakened, topLevel, viaHelper, since, timeBudget, excluded, excludedWeakened]
+  writeFileSync(join(repo, "src/core/selftest-sample.test.ts"), tests)
+  writeFileSync(join(repo, "src/core/selftest-sample.ts"), `// テストが読み込むソースのコメント\n${sample}`)
+  const excludedWithSource = { name: "excludedMutatorsで消し、テストが読み込むソースのコメントを変える", ...diff() }
+  writeFileSync(join(repo, "src/core/selftest-sample.ts"), sample)
+  writeFileSync(join(repo, "mutator.config.json"), mutatorConfig())
+  writeFileSync(join(repo, "tsconfig.json"), tsconfig(true))
+  writeFileSync(
+    join(repo, "src/core/selftest-sample.test.ts"),
+    without("絶対値を返す").replace("clamp, isWord, magnitude", "clamp, isWord")
+  )
+  const typeHidden = { name: "tsconfig.jsonでミュータントをCompileErrorにし、それを検出していたテストも消す", ...diff() }
+  const cases = [unchanged, weakened, topLevel, viaHelper, since, timeBudget, excluded, excludedWeakened, excludedWithSource, typeHidden]
   for (const result of cases) {
     process.stdout.write(`--- ${result.name}: 終了コード${result.status}\n${result.output}\n`)
   }
   const passed = check(cases, [
-    { status: 0, text: "テストが弱くなった箇所: 0件" },
+    { status: 0, text: "判定の結果: エラー0件" },
     { status: 1, text: "title=テストが弱くなった::" },
     { status: 1, text: "差分の実行で選ばれなかったため実行し直すと" },
     { status: 1, text: "差分の実行で選ばれなかったため実行し直すと" },
-    { status: 1, text: "mutator.config.jsonにsinceがあります" },
-    { status: 1, text: "mutator.config.jsonにtimeBudgetがあります" },
-    { status: 0, text: "title=ミュータントが設定で消えた::" },
-    { status: 1, text: "title=テストを弱めて、ミュータントを設定で消した::" }
+    { status: 1, text: "mutator.config.jsonにsince（" },
+    { status: 1, text: "mutator.config.jsonにtimeBudget（" },
+    { status: 0, text: "title=ミュータントが設定で外れた::" },
+    { status: 1, text: "title=テストを弱めて、設定で比べる対象から外した::" },
+    { status: 0, text: "title=ミュータントが設定で外れた::" },
+    { status: 1, text: "title=テストを弱めて、設定で比べる対象から外した::" }
   ])
   process.stdout.write(
     passed
