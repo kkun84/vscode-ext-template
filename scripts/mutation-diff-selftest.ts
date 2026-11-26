@@ -1,15 +1,19 @@
 // mutation-diff.tsを、一時的なGitリポジトリで本物のmutatorと一緒に動かして確かめる。
 // mutatorを上げたときに、判定が黙って外れていないかを見るためのもの。CIのcheck (Linux)で毎回動かす。
-// 1分ほどかかるので、pnpm checkには入れない。
+// 約1分かかるので、pnpm checkには入れない。
 //
 // 手順: このリポジトリをcloneし、今の作業ツリーの判定のスクリプトを入れ、小さな見本のコードとテストだけを
-// 対象にした設定でコミットする。そのコミットをorigin/mainとする。次の3つを確かめる。
+// 対象にした設定でコミットする。そのコミットをorigin/mainとする。次を確かめる。
 // - 何も変えずに動かすと、終了コード0で終わる
 // - 関数の中を確かめるテストを1つ消すと、テストが弱くなったとして終了コード1で終わる
 // - モジュールの直下の正規表現を確かめるアサーションを消すと、終了コード1で終わる。このミュータントは
 //   mutatorの差分の実行に選ばれないので、mutation-diff.tsが実行し直して見つける
+// - 同じことを、テストが呼ぶヘルパーだけを弱めて行っても、終了コード1で終わる
+// - mutatorの設定にsinceかtimeBudgetを足すと、名前を挙げて終了コード1で終わる
+// - excludedMutatorsでミュータントを消すだけなら警告で終了コード0、それを検出していたアサーションも
+//   消すと終了コード1で終わる
 import { spawnSync } from "node:child_process"
-import { copyFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 
@@ -67,12 +71,40 @@ it("英小文字だけなら単語とみなす", () => {
 })
 `
 
-const vitestConfig = `import { defineConfig } from "vitest/config"
+// テストがヘルパーを通してだけ確かめる見本。ヘルパーはミューテーションテストの対象にしない。
+const word = `const LOWER = /^[a-z]+$/u
 
-export default defineConfig({ test: { include: ["src/core/selftest-sample.test.ts"], environment: "node", passWithNoTests: false } })
+export const isLower = (text: string): boolean => LOWER.test(text)
 `
 
-const mutatorConfig = `${JSON.stringify({ include: ["src/core/selftest-sample.ts"], reporters: ["json"] })}\n`
+const helper = `import { expect } from "vitest"
+import { isLower } from "../core/selftest-word.ts"
+
+export const expectLower = (): void => {
+  expect(isLower("abc")).toBe(true)
+  expect(isLower("ab1")).toBe(false)
+  expect(isLower("1abc")).toBe(false)
+  expect(isLower("")).toBe(false)
+}
+`
+
+const helperTests = `import { it } from "vitest"
+import { expectLower } from "../testing/selftest-expect.ts"
+
+it("英小文字だけかを見分ける", () => {
+  expectLower()
+})
+`
+
+const vitestConfig = `import { defineConfig } from "vitest/config"
+
+export default defineConfig({
+  test: { include: ["src/core/selftest-sample.test.ts", "src/core/selftest-word.test.ts"], environment: "node", passWithNoTests: false }
+})
+`
+
+const mutatorConfig = (extra: object = {}): string =>
+  `${JSON.stringify({ include: ["src/core/selftest-sample.ts", "src/core/selftest-word.ts"], reporters: ["json"], ...extra })}\n`
 
 interface Case {
   readonly name: string
@@ -92,8 +124,12 @@ try {
   }
   writeFileSync(join(repo, "src/core/selftest-sample.ts"), sample)
   writeFileSync(join(repo, "src/core/selftest-sample.test.ts"), tests)
+  writeFileSync(join(repo, "src/core/selftest-word.ts"), word)
+  mkdirSync(join(repo, "src/testing"), { recursive: true })
+  writeFileSync(join(repo, "src/testing/selftest-expect.ts"), helper)
+  writeFileSync(join(repo, "src/core/selftest-word.test.ts"), helperTests)
   writeFileSync(join(repo, "vitest.config.ts"), vitestConfig)
-  writeFileSync(join(repo, "mutator.config.json"), mutatorConfig)
+  writeFileSync(join(repo, "mutator.config.json"), mutatorConfig())
   must("git", ["add", "-A"], repo)
   must(
     "git",
@@ -126,24 +162,46 @@ try {
   writeFileSync(join(repo, "src/core/selftest-sample.test.ts"), without("上限以下なら"))
   const weakened = { name: "関数の中を確かめるテストを消す", ...diff() }
   // テストは残し、アサーションだけを消す。テストを消すとmutatorが自分で見つけるので、この形で確かめる。
-  writeFileSync(
-    join(repo, "src/core/selftest-sample.test.ts"),
-    tests.replace('  expect(isWord("ab1")).toBe(false)\n  expect(isWord("1abc")).toBe(false)\n  expect(isWord("")).toBe(false)\n', "")
+  const withoutWordAssertions = tests.replace(
+    '  expect(isWord("ab1")).toBe(false)\n  expect(isWord("1abc")).toBe(false)\n  expect(isWord("")).toBe(false)\n',
+    ""
   )
+  writeFileSync(join(repo, "src/core/selftest-sample.test.ts"), withoutWordAssertions)
   const topLevel = { name: "モジュールの直下を確かめるアサーションを消す", ...diff() }
-  const cases = [unchanged, weakened, topLevel]
+  writeFileSync(join(repo, "src/core/selftest-sample.test.ts"), tests)
+  writeFileSync(
+    join(repo, "src/testing/selftest-expect.ts"),
+    helper.replace('  expect(isLower("ab1")).toBe(false)\n  expect(isLower("1abc")).toBe(false)\n  expect(isLower("")).toBe(false)\n', "")
+  )
+  const viaHelper = { name: "ヘルパーだけを弱める", ...diff() }
+  writeFileSync(join(repo, "src/testing/selftest-expect.ts"), helper)
+  writeFileSync(join(repo, "mutator.config.json"), mutatorConfig({ since: "HEAD" }))
+  const since = { name: "mutatorの設定にsinceを足す", ...diff() }
+  writeFileSync(join(repo, "mutator.config.json"), mutatorConfig({ timeBudget: 6 }))
+  const timeBudget = { name: "mutatorの設定にtimeBudgetを足す", ...diff() }
+  // 正規表現のミュータントを種類ごと消す。
+  writeFileSync(join(repo, "mutator.config.json"), mutatorConfig({ excludedMutators: ["Regex"] }))
+  const excluded = { name: "excludedMutatorsでミュータントを消すだけ", ...diff() }
+  writeFileSync(join(repo, "src/core/selftest-sample.test.ts"), withoutWordAssertions)
+  const excludedWeakened = { name: "excludedMutatorsで消し、それを検出していたアサーションも消す", ...diff() }
+  const cases = [unchanged, weakened, topLevel, viaHelper, since, timeBudget, excluded, excludedWeakened]
   for (const result of cases) {
     process.stdout.write(`--- ${result.name}: 終了コード${result.status}\n${result.output}\n`)
   }
   const passed = check(cases, [
     { status: 0, text: "テストが弱くなった箇所: 0件" },
     { status: 1, text: "title=テストが弱くなった::" },
-    { status: 1, text: "差分の実行で選ばれなかったため実行し直すと" }
+    { status: 1, text: "差分の実行で選ばれなかったため実行し直すと" },
+    { status: 1, text: "差分の実行で選ばれなかったため実行し直すと" },
+    { status: 1, text: "mutator.config.jsonにsinceがあります" },
+    { status: 1, text: "mutator.config.jsonにtimeBudgetがあります" },
+    { status: 0, text: "title=ミュータントが設定で消えた::" },
+    { status: 1, text: "title=テストを弱めて、ミュータントを設定で消した::" }
   ])
   process.stdout.write(
     passed
-      ? "判定の自己検査: 何も変えなければ成功し、テストやアサーションを消せば失敗しました。\n"
-      : "::error title=判定の自己検査が失敗した::何も変えなければ成功し、テストを消せば失敗する、を満たしませんでした。mutatorを上げたときは、レポートの形と判定（scripts/mutation-report.ts）を合わせてください。\n"
+      ? "判定の自己検査: 何も変えなければ成功し、テストやアサーションを消すか、判定を外す設定を足せば失敗しました。\n"
+      : "::error title=判定の自己検査が失敗した::何も変えなければ成功し、テストを消すか判定を外す設定を足せば失敗する、を満たしませんでした。上の各場合の出力を確かめてください。mutatorを上げたときは、レポートの形と判定（scripts/mutation-report.ts、scripts/mutation-diff.ts）を合わせてください。\n"
   )
   process.exitCode = passed ? 0 : 1
 } finally {

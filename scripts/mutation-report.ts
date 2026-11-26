@@ -43,7 +43,9 @@ export const MutationReport = Schema.Struct({
   // 前回と比べて足した、変えた、消したテスト。比べる相手があるときだけある。
   testChanges: Schema.optionalKey(
     Schema.Struct({ added: Schema.Array(Schema.String), changed: Schema.Array(Schema.String), removed: Schema.Array(Schema.String) })
-  )
+  ),
+  // 変えたテストが届くので差分の実行に選んだミュータントと、そのテスト。--include-test-changesのときだけある。
+  selectionReasons: Schema.optionalKey(Schema.Array(Schema.Struct({ key: Schema.String, tests: Schema.Array(Schema.String) })))
 })
 
 export type MutationReport = typeof MutationReport.Type
@@ -331,13 +333,22 @@ export const parseOptions = (argv: ReadonlyArray<string>): Options | string => {
 // mutatorの--since --include-test-changesは、変えたテストが届くミュータントを選んで実行する。モジュールの
 // 直下にある正規表現など、読み込みの時に一度だけ動くコードのミュータントは、どのテストが届くかが記録されず
 //（coveredByが空）、選ばれない。すると、それを検出していたテストを弱めても、前の「検出した」が残る。
-// そこで、基準で検出したテストに変えたか消したテストを含み、関数の中身が変わっておらず、今回の実行で
+// そこで、基準で検出したテストに変わったテストを含み、関数の中身が変わっておらず、今回の実行で
 // 確かめられていない（--kill-matrixで実行し直した「検出した」ではない）ミュータントを、--onlyで実行し直す。
 // 範囲の中の「検出した」は、--kill-matrixを付けるとmutatorが必ず実行し直す
 //（node_modules/@mizchi/mutator-coreのsrc/plan.tsのreuse）。
+//
+// 変わったテストは、次のどれかに当たるもの。レポートのtestChangesは、差分にテストファイルがあるものに
+// 限るので、それだけではヘルパーだけを弱めた変更が漏れる。
+// - レポートのtestChangesの変えたか消したテストと、selectionReasons[].tests
+// - テストのファイルか、それが読み込むファイル（mutatorのsnapshotのdeps。Viteのモジュールグラフを
+//   推移的に辿ったもの）が、分岐点からの差分にあるテスト
+// 差分の範囲の外のミュータントは、今のsnapshotでは何も変えなくてもPendingになるので、テストが変わったか
+// を問わずに選ぶと、関係の無い変更でもほぼ全件を実行し直すことになる。
 
 const UNDETECTED: ReadonlySet<string> = new Set(["Survived", "NoCoverage"])
-const DETECTED: ReadonlySet<string> = new Set(["Killed", "Timeout"])
+// mutatorのsrc/status.tsのisDetectedに合わせる。
+const DETECTED: ReadonlySet<string> = new Set(["Killed", "Timeout", "RuntimeError"])
 
 const mutants = (report: MutationReport): ReadonlyMap<string, MutantRecord> =>
   new Map(Object.values(report.files).flatMap((entry) => entry.mutants.map((mutant) => [mutant.id, mutant] as const)))
@@ -361,14 +372,48 @@ export const snapshotRows = (snapshot: unknown): ReadonlyMap<string, SnapshotRow
     )
   )
 
-/** 実行し直すミュータント。基準で検出したテストに変えたか消したテストを含み、関数の中身が同じで、今回確かめていないもの。 */
+const SnapshotDeps = Schema.Struct({ deps: Schema.optionalKey(Schema.Record(Schema.String, Schema.Array(Schema.String))) })
+
+/** mutatorのsnapshotから、テストファイルごとに読み込んだファイルを読む。 */
+export const snapshotDeps = (snapshot: unknown): ReadonlyMap<string, ReadonlyArray<string>> =>
+  new Map(Object.entries(Schema.decodeUnknownSync(SnapshotDeps)(snapshot).deps ?? {}))
+
+// テストのid（src/core/a.test.ts#suite > name）のファイル。
+const fileOfTest = (test: string): string => {
+  const at = test.indexOf("#")
+  return at === -1 ? test : test.slice(0, at)
+}
+
+/**
+ * 変わったテストかを返す関数。`changedFiles`は分岐点からの差分のファイル（根からのパス）、`deps`は基準と
+ * 今のsnapshotのsnapshotDepsを並べたもの。足しただけのテストは、前の「検出した」を弱めないが、
+ * ファイルが差分にあれば含まれる。
+ */
+export const touchedTests = (
+  current: MutationReport | undefined,
+  changedFiles: ReadonlyArray<string>,
+  deps: ReadonlyArray<ReadonlyMap<string, ReadonlyArray<string>>>
+): ((test: string) => boolean) => {
+  const named = new Set([
+    ...(current?.testChanges?.changed ?? []),
+    ...(current?.testChanges?.removed ?? []),
+    ...(current?.selectionReasons ?? []).flatMap((reason) => reason.tests)
+  ])
+  const changed = new Set(changedFiles)
+  return (test) => {
+    const file = fileOfTest(test)
+    return named.has(test) || changed.has(file) || deps.some((map) => (map.get(file) ?? []).some((dep) => changed.has(dep)))
+  }
+}
+
+/** 実行し直すミュータント。基準で検出したテストに`touched`を含み、関数の中身が同じで、今回確かめていないもの。 */
 export const unselectedCandidates = (
   base: MutationReport,
   current: MutationReport,
   baseRows: ReadonlyMap<string, SnapshotRow>,
-  currentRows: ReadonlyMap<string, SnapshotRow>
+  currentRows: ReadonlyMap<string, SnapshotRow>,
+  touched: (test: string) => boolean
 ): ReadonlyArray<string> => {
-  const touched = new Set([...(current.testChanges?.changed ?? []), ...(current.testChanges?.removed ?? [])])
   const reported = new Set(current.findings.filter((finding) => finding.kind === "detectionRegression").map((finding) => finding.key))
   return [...mutants(base).values()]
     .filter((mutant) => {
@@ -376,7 +421,7 @@ export const unselectedCandidates = (
       const now = currentRows.get(mutant.id)
       return (
         mutant.status === "Killed" &&
-        mutant.killedBy.some((test) => touched.has(test)) &&
+        mutant.killedBy.some((test) => touched(test)) &&
         before !== undefined &&
         now !== undefined &&
         before.scopeHash === now.scopeHash &&
@@ -433,6 +478,85 @@ export const reviewNotRun = (output: string): ReadonlyArray<string> => {
           message: `差分の実行で、実行しなかったミュータントがあります（${detail}）。テストが弱くなったかを確かめきれないので失敗にします。mutator.config.*のtimeBudgetやmutantsPerLineを外してください。`
         })
       ]
+}
+
+// 実行するミュータントを減らすか、結果の置き場所を変えるmutatorの設定。基準の全件も差分の実行も
+// 途中で打ち切られたり、判定が読む結果と食い違ったりして、テストを弱めた変更を黙って通しうる。
+const RUN_LIMITS = ["since", "timeBudget", "mutantsPerLine", "shard", "reportDir"]
+
+/** mutatorの設定に、判定と合わない項目があれば失敗にする。`config`は読み込んだ設定、`path`はそのファイル。 */
+export const reviewRunLimits = (config: object | undefined, path: string): ReadonlyArray<string> => {
+  const found = RUN_LIMITS.filter((key) => config !== undefined && Object.hasOwn(config, key))
+  return found.length === 0
+    ? []
+    : [
+        formatAnnotation({
+          level: "error",
+          title: "判定と合わないmutatorの設定",
+          file: path,
+          message: `${path}に${found.join("、")}があります。実行するミュータントを減らすか、結果の置き場所を変えるので、テストを弱めた変更を確かめきれません。外してください。`
+        })
+      ]
+}
+
+/** 実行しなかったミュータント（Pending）のキー。基準の全件が途中で打ち切られていないかを見る。 */
+export const pendingKeys = (report: MutationReport): ReadonlyArray<string> =>
+  [...mutants(report).values()].filter((mutant) => mutant.status === "Pending").map((mutant) => mutant.id)
+
+// 警告に並べるミュータントの数。設定で種類ごと外すと数百件になりうる。
+const LISTED = 5
+
+/**
+ * 今の設定で消えたミュータントを判定する。`dropped`は、基準のコミットを基準の元の設定で実行し直した
+ * レポート、`keys`は今の設定で消えたもの。基準で検出していて、検出したテストに`touched`を含むものは
+ * 失敗にする。テストを弱めて、そのミュータントを設定で消せば通ってしまうため。残りは警告にする。
+ */
+export const reviewDroppedMutants = (
+  dropped: MutationReport,
+  keys: ReadonlyArray<string>,
+  touched: (test: string) => boolean
+): ReadonlyArray<string> => {
+  const records = mutants(dropped)
+  const failing = (key: string): boolean => {
+    const record = records.get(key)
+    return (
+      record === undefined || record.status === "Pending" || (DETECTED.has(record.status) && record.killedBy.some((test) => touched(test)))
+    )
+  }
+  const errors = keys
+    .filter((key) => failing(key))
+    .map((key) => {
+      const record = records.get(key)
+      const located = locate(dropped, key)
+      return formatAnnotation(
+        record === undefined || record.status === "Pending"
+          ? {
+              level: "error",
+              title: "消えたミュータントを確かめられなかった",
+              message: `今の設定で消えたミュータント${key}を、基準の設定で実行し直した結果が「${record?.status ?? "結果なし"}」でした。テストが弱くなったかを確かめられないので失敗にします。`,
+              ...position(located)
+            }
+          : {
+              level: "error",
+              title: "テストを弱めて、ミュータントを設定で消した",
+              message: `ミュータント${key}${located.change}は、基準の設定では${describeKillers(record.killedBy.filter((test) => touched(test)))}が検出していましたが、今のmutatorの設定で対象から消えました。そのテストかヘルパーも変わっているので、テストを弱めた変更を設定で隠していないかを確かめられません。設定を戻すか、テストの変更と設定の変更を別のPRに分けてください。`,
+              ...position(located)
+            }
+      )
+    })
+  const rest = keys.filter((key) => !failing(key))
+  return [
+    ...errors,
+    ...(rest.length === 0
+      ? []
+      : [
+          formatAnnotation({
+            level: "warning",
+            title: "ミュータントが設定で消えた",
+            message: `今のmutatorの設定で、基準の設定にあったミュータントが${rest.length}件消えました（${rest.slice(0, LISTED).join("、")}${rest.length > LISTED ? "など" : ""}）。それを検出していたテストは変わっていませんが、検査する範囲が狭まっていないかを確かめてください。`
+          })
+        ])
+  ]
 }
 
 /** .mutatorがGitで追跡されていたら失敗にする。追跡した結果を基準と取り違えないため。 */

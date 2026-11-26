@@ -12,13 +12,18 @@ import {
   reviewDroppedSources,
   reviewDroppedTests,
   reviewFindings,
+  pendingKeys,
+  reviewDroppedMutants,
   reviewNotRun,
+  reviewRunLimits,
   reviewTrackedMutator,
   reviewUnselected,
   reviewSettingChanges,
   reviewSkippedTests,
   reviewUnreadableReport,
+  snapshotDeps,
   snapshotRows,
+  touchedTests,
   unselectedCandidates
 } from "./mutation-report.ts"
 
@@ -298,13 +303,14 @@ describe("差分の実行で選ばれないミュータントの確かめ", () =
       "src/core/word.ts": { mutants: [mutant("top", 1, "Killed", [killer]), mutant("other", 2, "Killed", ["src/a.test.ts#変えていない"])] }
     }
   }
-  const current = { ...report([]), testChanges: { added: [], changed: [], removed: [killer] } }
+  const current = report([])
+  const touched = (test: string): boolean => test === killer
   const baseRows = new Map([
     ["top", row("Killed")],
     ["other", row("Killed")]
   ])
 
-  it("基準で検出したテストに消したテストを含み、今回確かめていない（使い回したか実行していない）ものを選ぶ", () => {
+  it("基準で検出したテストに変わったテストを含み、今回確かめていない（使い回したか実行していない）ものを選ぶ", () => {
     expect(
       unselectedCandidates(
         base,
@@ -313,23 +319,40 @@ describe("差分の実行で選ばれないミュータントの確かめ", () =
         new Map([
           ["top", row("Killed")],
           ["other", row("Killed")]
-        ])
+        ]),
+        touched
       )
     ).toEqual(["top"])
-    expect(unselectedCandidates(base, current, baseRows, new Map([["top", row("Pending")]]))).toEqual(["top"])
+    expect(unselectedCandidates(base, current, baseRows, new Map([["top", row("Pending")]]), touched)).toEqual(["top"])
     // 今は無いミュータント（ファイルごと消したなど）は、実行し直せないので選ばない。
-    expect(unselectedCandidates(base, current, baseRows, new Map())).toEqual([])
+    expect(unselectedCandidates(base, current, baseRows, new Map(), touched)).toEqual([])
+  })
+
+  it("検出したテストが変わっていなければ、今のsnapshotでPendingでも選ばない", () => {
+    expect(
+      unselectedCandidates(
+        base,
+        current,
+        baseRows,
+        new Map([
+          ["top", row("Pending")],
+          ["other", row("Pending")]
+        ]),
+        () => false
+      )
+    ).toEqual([])
   })
 
   it("--kill-matrixで実行し直した「検出した」、関数の中身が変わったもの、mutatorが報告したものは選ばない", () => {
-    expect(unselectedCandidates(base, current, baseRows, new Map([["top", row("Killed", true)]]))).toEqual([])
-    expect(unselectedCandidates(base, current, baseRows, new Map([["top", row("Killed", false, "changed")]]))).toEqual([])
+    expect(unselectedCandidates(base, current, baseRows, new Map([["top", row("Killed", true)]]), touched)).toEqual([])
+    expect(unselectedCandidates(base, current, baseRows, new Map([["top", row("Killed", false, "changed")]]), touched)).toEqual([])
     expect(
       unselectedCandidates(
         base,
         { ...current, findings: [{ kind: "detectionRegression", key: "top" }] },
         baseRows,
-        new Map([["top", row("Killed")]])
+        new Map([["top", row("Killed")]]),
+        touched
       )
     ).toEqual([])
   })
@@ -345,8 +368,90 @@ describe("差分の実行で選ばれないミュータントの確かめ", () =
     expect(reviewUnselected(base, ["top"], report([]))[0]).toContain("「結果なし」")
     expect(reviewUnselected(base, ["top"], rerun("Killed"))).toEqual([])
     expect(reviewUnselected(base, ["top"], rerun("Timeout"))).toEqual([])
+    expect(reviewUnselected(base, ["top"], rerun("RuntimeError"))).toEqual([])
+  })
+})
+
+describe("reviewNotRun", () => {
+  it("実行しなかったミュータントがあれば失敗にする", () => {
+    expect(reviewNotRun("score: 100%\nnot run: 3 over the time budget (--time-budget)\n")).toEqual([
+      "::error title=実行しなかったミュータントがある::差分の実行で、実行しなかったミュータントがあります（3 over the time budget (--time-budget)）。テストが弱くなったかを確かめきれないので失敗にします。mutator.config.*のtimeBudgetやmutantsPerLineを外してください。"
+    ])
+    expect(reviewNotRun("score: 100%\n")).toEqual([])
+  })
+})
+
+describe("reviewTrackedMutator", () => {
+  it(".mutatorが追跡されていたら失敗にする", () => {
+    expect(reviewTrackedMutator([".mutator/snapshot.json", ".mutator/scopes/a.json"])).toEqual([
+      "::error file=.mutator/snapshot.json,title=.mutatorが追跡されている::.mutatorの中のファイル（2件）がGitで追跡されています。.mutatorは実行のたびに作り直す結果なので、git rm -r --cached .mutatorで追跡を外してください。"
+    ])
+    expect(reviewTrackedMutator([])).toEqual([])
+  })
+})
+
+describe("reviewRunLimits", () => {
+  it("実行するミュータントを減らすか、結果の置き場所を変える設定を、名前を挙げて失敗にする", () => {
+    expect(reviewRunLimits({ include: ["src/**"], since: "HEAD", timeBudget: 6 }, "mutator.config.json")).toEqual([
+      "::error file=mutator.config.json,title=判定と合わないmutatorの設定::mutator.config.jsonにsince、timeBudgetがあります。実行するミュータントを減らすか、結果の置き場所を変えるので、テストを弱めた変更を確かめきれません。外してください。"
+    ])
+    expect(reviewRunLimits({ mutantsPerLine: 1, shard: "1/2", reportDir: "out" }, "m.json")[0]).toContain(
+      "mutantsPerLine、shard、reportDir"
+    )
+    expect(reviewRunLimits({ include: ["src/**"], excludedMutators: ["Regex"] }, "mutator.config.json")).toEqual([])
+    expect(reviewRunLimits(undefined, "mutator.config.*")).toEqual([])
+  })
+})
+
+describe("pendingKeys", () => {
+  it("実行しなかったミュータントのキーを返す", () => {
+    const pending = { ...report([]), files: { "src/core/note.ts": { mutants: [mutant("a", 1, "Pending"), mutant("b", 2, "Killed")] } } }
+    expect(pendingKeys(pending)).toEqual(["a"])
+    expect(pendingKeys(report([]))).toEqual([])
+  })
+})
+
+describe("reviewDroppedMutants", () => {
+  const killer = "src/core/word.test.ts#単語"
+  const dropped = {
+    ...report([]),
+    files: {
+      "src/core/word.ts": {
+        mutants: [
+          mutant("weak", 1, "Killed", [killer]),
+          mutant("kept", 2, "Killed", ["src/core/other.test.ts#変えていない"]),
+          mutant("survived", 3, "Survived"),
+          mutant("pending", 4, "Pending")
+        ]
+      }
+    }
+  }
+
+  it("検出していたテストが変わっていれば失敗、変わっていなければまとめて警告にする", () => {
+    expect(reviewDroppedMutants(dropped, ["weak", "kept", "survived"], (test) => test === killer)).toEqual([
+      `::error file=src/core/word.ts,line=1,title=テストを弱めて、ミュータントを設定で消した::ミュータントweak（StringLiteralで""に置き換え）は、基準の設定では「${killer}」が検出していましたが、今のmutatorの設定で対象から消えました。そのテストかヘルパーも変わっているので、テストを弱めた変更を設定で隠していないかを確かめられません。設定を戻すか、テストの変更と設定の変更を別のPRに分けてください。`,
+      "::warning title=ミュータントが設定で消えた::今のmutatorの設定で、基準の設定にあったミュータントが2件消えました（kept、survived）。それを検出していたテストは変わっていませんが、検査する範囲が狭まっていないかを確かめてください。"
+    ])
+    expect(reviewDroppedMutants(dropped, ["weak"], () => false)).toEqual([
+      "::warning title=ミュータントが設定で消えた::今のmutatorの設定で、基準の設定にあったミュータントが1件消えました（weak）。それを検出していたテストは変わっていませんが、検査する範囲が狭まっていないかを確かめてください。"
+    ])
   })
 
+  it("実行し直した結果が無いか、実行しなかったものは、確かめられないので失敗にする", () => {
+    const lines = reviewDroppedMutants(dropped, ["pending", "missing"], () => false)
+    expect(lines).toHaveLength(2)
+    expect(lines[0]).toContain("title=消えたミュータントを確かめられなかった::")
+    expect(lines[0]).toContain("「Pending」")
+    expect(lines[1]).toContain("「結果なし」")
+  })
+
+  it("警告に並べるのは5件までにする", () => {
+    const many = { ...report([]), files: { "a.ts": { mutants: ["1", "2", "3", "4", "5", "6"].map((id) => mutant(id, 1, "Survived")) } } }
+    expect(reviewDroppedMutants(many, ["1", "2", "3", "4", "5", "6"], () => false)[0]).toContain("6件消えました（1、2、3、4、5など）")
+  })
+})
+
+describe("snapshotRows", () => {
   it("snapshotの行から、関数の中身のハッシュと状態と--kill-matrixの印を読む", () => {
     expect(
       snapshotRows({
@@ -366,20 +471,33 @@ describe("差分の実行で選ばれないミュータントの確かめ", () =
   })
 })
 
-describe("reviewNotRun", () => {
-  it("実行しなかったミュータントがあれば失敗にする", () => {
-    expect(reviewNotRun("score: 100%\nnot run: 3 over the time budget (--time-budget)\n")).toEqual([
-      "::error title=実行しなかったミュータントがある::差分の実行で、実行しなかったミュータントがあります（3 over the time budget (--time-budget)）。テストが弱くなったかを確かめきれないので失敗にします。mutator.config.*のtimeBudgetやmutantsPerLineを外してください。"
+describe("touchedTests", () => {
+  it("変わったテストは、mutatorが挙げたものと、ファイルか読み込むファイルが差分にあるもの", () => {
+    const withChanges = {
+      ...report([]),
+      testChanges: { added: [], changed: ["src/a.test.ts#変えた"], removed: ["src/gone.test.ts#消した"] },
+      selectionReasons: [{ key: "k", tests: ["src/b.test.ts#選んだ"] }]
+    }
+    const deps = snapshotDeps({ deps: { "src/core/word.test.ts": ["src/core/word.ts", "src/testing/expect-word.ts"] } })
+    const touchedBy = touchedTests(withChanges, ["src/testing/expect-word.ts", "src/c.test.ts"], [new Map(), deps])
+    expect(
+      [
+        "src/a.test.ts#変えた",
+        "src/gone.test.ts#消した",
+        "src/b.test.ts#選んだ",
+        "src/core/word.test.ts#ヘルパーが変わった",
+        "src/c.test.ts#ファイルが変わった",
+        "src/a.test.ts#変えていない",
+        "src/d.test.ts#変えていない"
+      ].filter((test) => touchedBy(test))
+    ).toEqual([
+      "src/a.test.ts#変えた",
+      "src/gone.test.ts#消した",
+      "src/b.test.ts#選んだ",
+      "src/core/word.test.ts#ヘルパーが変わった",
+      "src/c.test.ts#ファイルが変わった"
     ])
-    expect(reviewNotRun("score: 100%\n")).toEqual([])
-  })
-})
-
-describe("reviewTrackedMutator", () => {
-  it(".mutatorが追跡されていたら失敗にする", () => {
-    expect(reviewTrackedMutator([".mutator/snapshot.json", ".mutator/scopes/a.json"])).toEqual([
-      "::error file=.mutator/snapshot.json,title=.mutatorが追跡されている::.mutatorの中のファイル（2件）がGitで追跡されています。.mutatorは実行のたびに作り直す結果なので、git rm -r --cached .mutatorで追跡を外してください。"
-    ])
-    expect(reviewTrackedMutator([])).toEqual([])
+    expect(touchedTests(undefined, [], [])("src/a.test.ts#a")).toBe(false)
+    expect(snapshotDeps({ rows: [] })).toEqual(new Map())
   })
 })
