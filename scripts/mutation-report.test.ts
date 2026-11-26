@@ -6,9 +6,10 @@ import {
   isEnvironmentFile,
   MutationReport,
   regressionAdvice,
+  reviewBaselineFailure,
   reviewFindings,
-  reviewMissingBaseline,
-  reviewSettingChanges
+  reviewSettingChanges,
+  reviewSkippedTests
 } from "./mutation-report.ts"
 
 const decode = Schema.decodeUnknownSync(MutationReport)
@@ -138,11 +139,25 @@ describe("reviewFindings", () => {
   })
 })
 
-describe("reviewMissingBaseline", () => {
-  it("基準を作れなかった理由を、失敗にしない警告にする", () => {
-    expect(reviewMissingBaseline("取り出せませんでした。")).toBe(
-      "::warning title=比較の基準を作れなかった::取り出せませんでした。 テストが弱くなったかは確かめていません。"
+describe("reviewBaselineFailure", () => {
+  it("基準を作れなかった理由を、失敗のエラーにする", () => {
+    expect(reviewBaselineFailure("取り出せませんでした。")).toBe(
+      "::error title=比較の基準を作れなかった::取り出せませんでした。 基準が無いと、テストが弱くなったかを確かめられないので失敗にします。"
     )
+  })
+})
+
+describe("reviewSkippedTests", () => {
+  it("mutatorのtextの出力から、変更の中で飛ばしたテストを行に付けた警告にする", () => {
+    const output = [
+      "score (changed code): 100.0% [high]  (1.3s)",
+      "warning: src/core/note.test.ts:39 skips a test in the change, so it checks nothing: 飛ばしたテストの行",
+      "report written to .mutator/report"
+    ].join("\n")
+    expect(reviewSkippedTests(output)).toEqual([
+      "::warning file=src/core/note.test.ts,line=39,title=飛ばしたテスト::変更の中でテストを飛ばしています（飛ばしたテストの行）。飛ばしたテストは何も確かめません。"
+    ])
+    expect(reviewSkippedTests("warning: something else")).toEqual([])
   })
 })
 

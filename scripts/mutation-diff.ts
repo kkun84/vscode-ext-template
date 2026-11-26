@@ -10,13 +10,22 @@
 // まず、基準のrefとHEADの分岐点のコミットを、一時ディレクトリにgit worktreeで取り出す。mutatorの環境ハッシュを
 // 今と揃えるため、package.jsonなどの環境のファイルを今の作業ツリーから写し、依存を入れて、全件を実行する。
 // その結果（.mutatorのsnapshot）を今の作業ツリーの.mutatorに入れ、分岐点からの差分を実行して判定する。
-// 基準を作れなかった（分岐点のテストが今の依存で落ちるなど）ときは、警告を出して成功にする。
+// 基準を作れなかった（分岐点のテストが今の依存で落ちるなど）ときは、理由を出して失敗にする。
+// 基準のrefが無いとき（雛形から作った直後のcloneなど）と、Gitの外では何もしない。
 import { spawnSync } from "node:child_process"
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join, resolve } from "node:path"
+import { dirname, isAbsolute, join, relative, resolve } from "node:path"
 import { Schema } from "effect"
-import { isEnvironmentFile, MutationReport, reviewFindings, reviewMissingBaseline, reviewSettingChanges } from "./mutation-report.ts"
+import { resolveConfig } from "vitest/node"
+import {
+  isEnvironmentFile,
+  MutationReport,
+  reviewBaselineFailure,
+  reviewFindings,
+  reviewSettingChanges,
+  reviewSkippedTests
+} from "./mutation-report.ts"
 
 const root = resolve(import.meta.dirname, "..")
 const argv = process.argv.slice(2)
@@ -43,12 +52,13 @@ interface Result {
   readonly output: string
 }
 
-// 出力を受け取るときは、失敗した時だけ表示する。inheritなら、そのまま流す。
-const run = (command: string, args: ReadonlyArray<string>, cwd: string, inherit = false): Result => {
+// 出力は受け取って返す。表示するかは呼ぶ側が決める。
+const run = (command: string, args: ReadonlyArray<string>, cwd: string): Result => {
   const result = spawnSync(command, args, {
     cwd,
     encoding: "utf8",
-    stdio: inherit ? "inherit" : "pipe",
+    stdio: ["ignore", "pipe", "pipe"],
+    maxBuffer: 64 * 1024 * 1024,
     // mutatorがGitHub Actionsの注釈を出すと、「等価ならmutator accept」の案内が判定の注釈と並ぶ。
     // 注釈はmutation-report.tsで出し直すので、mutatorには出させない。
     env: { ...process.env, GITHUB_ACTIONS: "" },
@@ -75,13 +85,34 @@ const say = (line: string): void => {
   process.stdout.write(`${line}\n`)
 }
 
-/** 基準を作れたらtrue。作れなければ、理由を警告にして出す。 */
-const buildBaseline = (base: string, worktree: string): boolean => {
+const VitestFiles = Schema.Struct({
+  configFile: Schema.optionalKey(Schema.String),
+  test: Schema.optionalKey(
+    Schema.Struct({
+      setupFiles: Schema.optionalKey(Schema.Union([Schema.String, Schema.Array(Schema.String)])),
+      globalSetup: Schema.optionalKey(Schema.Union([Schema.String, Schema.Array(Schema.String)]))
+    })
+  )
+})
+
+// Vitestの設定ファイルと、それが読むsetupFilesとglobalSetupも、mutatorの環境ハッシュに入る
+//（mutator-vitestのconfigFiles）。根からの相対パスで返す。根の外のものは、基準でも同じなので要らない。
+const vitestFiles = async (): Promise<ReadonlyArray<string>> => {
+  const config = Schema.decodeUnknownSync(VitestFiles)(await resolveConfig({ root, watch: false }))
+  return [config.configFile ?? [], config.test?.setupFiles ?? [], config.test?.globalSetup ?? []]
+    .flat()
+    .map((file) => relative(root, resolve(root, file)))
+    .filter((file) => !file.startsWith("..") && !isAbsolute(file) && existsSync(join(root, file)))
+}
+
+class BaselineFailure extends Error {}
+
+/** 基準を作る。作れなければBaselineFailureを投げる。 */
+const buildBaseline = async (base: string, worktree: string): Promise<void> => {
   const added = git("worktree", "add", "--detach", worktree, base)
   if (!added.ok) {
     say(tail(added.output))
-    say(reviewMissingBaseline(`基準のコミット${base}を取り出せませんでした。`))
-    return false
+    throw new BaselineFailure(`基準のコミット${base}を一時ディレクトリに取り出せませんでした。上のgitの出力を確かめてください。`)
   }
   // 環境のファイルを、基準のものから今のものに入れ替える。今だけにあるものは足し、基準だけにあるものは消す。
   for (const name of readdirSync(worktree).filter((file) => isEnvironmentFile(file))) {
@@ -90,30 +121,29 @@ const buildBaseline = (base: string, worktree: string): boolean => {
   for (const name of readdirSync(root).filter((file) => isEnvironmentFile(file))) {
     copyFileSync(join(root, name), join(worktree, name))
   }
+  for (const file of await vitestFiles()) {
+    mkdirSync(dirname(join(worktree, file)), { recursive: true })
+    copyFileSync(join(root, file), join(worktree, file))
+  }
   // --ignore-scriptsで、lefthookのprepareがこのリポジトリの.git/hooksを書き換えないようにする。
   // node_modulesは今のものをsymlinkで使い回さない。mutatorの--sinceが、未追跡のsymlinkを読んで失敗するため。
   const installed = pnpm(["install", "--frozen-lockfile", "--offline", "--ignore-scripts"], worktree)
   if (!installed.ok) {
     say(tail(installed.output))
-    say(
-      reviewMissingBaseline(`基準のコミット${base}に、今の依存を入れられませんでした。先に今の作業ツリーでpnpm installを実行してください。`)
+    throw new BaselineFailure(
+      `基準のコミット${base}に、今の依存を入れられませんでした。今の作業ツリーでpnpm installを実行してから、もう一度実行してください。`
     )
-    return false
   }
   say(`基準のコミット${base}で、ミューテーションテストを全件実行します。`)
   const started = performance.now()
   const full = run(process.execPath, [mutatorCli(worktree), "--reporter", "json"], worktree)
   if (!full.ok) {
     say(tail(full.output))
-    say(
-      reviewMissingBaseline(
-        `基準のコミット${base}で、ミューテーションテストの全件が失敗しました。基準のテストが今の依存で落ちるときに起きます。`
-      )
+    throw new BaselineFailure(
+      `基準のコミット${base}のテストが、今の依存と設定では通りませんでした（上の出力）。多くは、依存の更新でテストが壊れたときに起きます。今の作業ツリーでpnpm testが通るように直してください。今のテストが通るのに起きるときは、基準のテストが今の依存や設定（setupFilesなど）に合っていません。依存や設定の変更と、それに合わせたテストの直しを分け、テストの直しを先にmainに入れてください。`
     )
-    return false
   }
   say(`基準の結果ができました（${Math.round((performance.now() - started) / 1000)}秒）。変更を入れた作業ツリーで、差分を実行します。`)
-  return true
 }
 
 // 基準の全件の結果のうち、次の実行が比べる相手として読むsnapshotだけを写す。
@@ -152,28 +182,30 @@ const judge = (base: string): 0 | 1 => {
       "--reporter",
       "json"
     ],
-    root,
-    true
+    root
   )
+  process.stdout.write(diff.output)
   if (!diff.ok) {
     say("::error title=ミューテーションテストが失敗した::変更を入れた作業ツリーで、mutatorが失敗しました。上の出力を確かめてください。")
     return 1
   }
   const changed = git("diff", "--name-only", `${base}..HEAD`)
   const review = reviewFindings(loadReport(), reportPath)
-  say([...reviewSettingChanges(changed.output.split("\n")), ...review.lines].join("\n"))
+  say([...reviewSettingChanges(changed.output.split("\n")), ...reviewSkippedTests(diff.output), ...review.lines].join("\n"))
   return review.exitCode
 }
 
-const main = (): number => {
+const main = async (): Promise<number> => {
   if (!git("rev-parse", "--verify", "--quiet", `${ref}^{commit}`).ok) {
     say(`skipping mutation:diff: ${ref} not found`)
     return 0
   }
   const mergeBase = git("merge-base", ref, "HEAD")
   if (!mergeBase.ok) {
-    say(reviewMissingBaseline(`${ref}とHEADの分岐点が見つかりませんでした。`))
-    return 0
+    say(
+      reviewBaselineFailure(`${ref}とHEADの分岐点が見つかりませんでした。浅いcloneなら、履歴を取得してください（git fetch --unshallow）。`)
+    )
+    return 1
   }
   const base = mergeBase.output.trim()
   // 前回に強制終了されて残った登録を消す。
@@ -181,10 +213,14 @@ const main = (): number => {
   const temporary = mkdtempSync(join(tmpdir(), "mutation-base-"))
   const worktree = join(temporary, "base")
   try {
-    if (!buildBaseline(base, worktree)) {
-      return 0
-    }
+    await buildBaseline(base, worktree)
     adoptBaseline(worktree)
+  } catch (error) {
+    if (!(error instanceof BaselineFailure)) {
+      throw error
+    }
+    say(reviewBaselineFailure(error.message))
+    return 1
   } finally {
     git("worktree", "remove", "--force", worktree)
     rmSync(temporary, { recursive: true, force: true })
@@ -194,7 +230,7 @@ const main = (): number => {
 }
 
 try {
-  process.exitCode = main()
+  process.exitCode = await main()
 } catch (error) {
   if (!(error instanceof Interrupted)) {
     throw error

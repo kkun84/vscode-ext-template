@@ -182,13 +182,32 @@ export const reviewFindings = (report: MutationReport | undefined, path: string)
   }
 }
 
-/** 基準を作れなかったときの注釈。テストが弱くなったかを確かめていないことを知らせ、失敗にはしない。 */
-export const reviewMissingBaseline = (reason: string): string =>
+/**
+ * 基準を作れなかったときの注釈。失敗にする。多くは依存の更新でテストが壊れたときで、そのときは
+ * 普段のテストも落ちるので、失敗にしても余計な手間は増えない。黙って通すと、その間はテストを弱めた変更が通る。
+ */
+export const reviewBaselineFailure = (reason: string): string =>
   formatAnnotation({
-    level: "warning",
+    level: "error",
     title: "比較の基準を作れなかった",
-    message: `${reason} テストが弱くなったかは確かめていません。`
+    message: `${reason} 基準が無いと、テストが弱くなったかを確かめられないので失敗にします。`
   })
+
+// mutatorのtextレポーターが、変更の中で飛ばしたテスト（it.skipなど）を知らせる行。
+// jsonレポーターには載らないので、textの出力から拾う（node_modules/@mizchi/mutator/src/report.tsのskippedMessage）。
+const SKIPPED = /^warning: (?<file>.+?):(?<line>\d+) skips a test in the change, so it checks nothing: (?<text>.*)$/gmu
+
+/** mutatorのtextの出力から、変更の中で飛ばしたテストを警告にする。 */
+export const reviewSkippedTests = (output: string): ReadonlyArray<string> =>
+  [...output.matchAll(SKIPPED)].map((match) =>
+    formatAnnotation({
+      level: "warning",
+      title: "飛ばしたテスト",
+      file: match.groups?.["file"] ?? "",
+      line: Number(match.groups?.["line"]),
+      message: `変更の中でテストを飛ばしています（${match.groups?.["text"] ?? ""}）。飛ばしたテストは何も確かめません。`
+    })
+  )
 
 // mutatorの設定と等価ミュータントの記録。書き換えると、テストを弱めずに検査の範囲を狭められる。
 const isSetting = (file: string): boolean => /^mutator\.config\.[^/]+$/u.test(file) || file === "mutator.accepted.json"

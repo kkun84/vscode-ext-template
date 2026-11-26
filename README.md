@@ -56,11 +56,11 @@ Nixを使わない場合は、`.node-version`の版のNode.jsと、`package.json
 
 失敗にするのは、テストを弱めた変更だけです。変わっていないコードについて、前は検出できたミュータントを今は検出できない場合を指します。アサーションを弱めたり、テストを消したりした変更がこれに当たります。何も検出しない新しいテストは警告にします。
 
-- 比べる相手は、毎回その場で作ります。`origin/main`（CIではPRのマージ先）と`HEAD`の分岐点のコミットを、一時ディレクトリに`git worktree`で取り出し、全件を実行します。このとき、mutatorが比べる相手として使えるように、環境のファイル（`package.json`、`pnpm-lock.yaml`、`pnpm-workspace.yaml`、`tsconfig*.json`、`vitest.config.*`、`mutator.config.*`）を今の作業ツリーから写し、依存を入れ直します。mutatorは、Node.jsの版とこれらのファイルとmutatorの設定のどれかが違う結果を、比べる相手に使わないためです。その結果を`.mutator`に入れてから、分岐点からの差分と、変更したテストが確かめるコードのミュータントを実行して判定します。手順は`scripts/mutation-diff.ts`、判定は`scripts/mutation-report.ts`にあります。前回の実行の結果は使わないので、ブランチを切り替えても判定は変わりません
+- 比べる相手は、毎回その場で作ります。`origin/main`（CIではPRのマージ先）と`HEAD`の分岐点のコミットを、一時ディレクトリに`git worktree`で取り出し、全件を実行します。このとき、mutatorが比べる相手として使えるように、環境のファイル（`package.json`、`pnpm-lock.yaml`、`pnpm-workspace.yaml`、`tsconfig*.json`、`vitest.config.*`とそれが読む`setupFiles`と`globalSetup`、`mutator.config.*`）を今の作業ツリーから写し、依存を入れ直します。mutatorは、Node.jsの版とこれらのファイルとmutatorの設定のどれかが違う結果を、比べる相手に使わないためです。その結果を`.mutator`に入れてから、分岐点からの差分と、変更したテストが確かめるコードのミュータントを実行して判定します。手順は`scripts/mutation-diff.ts`、判定は`scripts/mutation-report.ts`にあります。前回の実行の結果は使わないので、ブランチを切り替えても判定は変わりません
 - 手元では、pre-pushが`pnpm mutation:diff`を実行し、テストを弱めた変更があればpushを止めます。`origin/main`が無いclone（雛形から作った直後など）では何もしません。この雛形を手元で測ると、変更が無いときに約20秒、テストを変えたときに約30秒かかります。ほとんどは分岐点の全件の実行です
 - 何も検出しない新しいテストは、手元では出ません。見つけるには、ミュータントごとにテストを全部動かす`--kill-matrix`が要り、テストを変えたときに約20秒遅くなるためです。手元で確かめるときは`pnpm mutation:diff origin/main --kill-matrix`を実行します
-- CIでは、`check (Linux)`がPRで同じ`pnpm mutation:diff`を`--kill-matrix`付きで実行し、テストを弱めた変更があれば失敗します。`check (Linux)`はマージに必須のチェックです。変更した行の検出漏れ（どのテストも届かないものを含む）は、PRの差分に警告として表示します。`mutator.config.*`か`mutator.accepted.json`を変えたときも警告します。続けて全件を実行し、全体のスコアをジョブの概要（Summary）に出します。mainへのpushでは全件だけを実行します。判定が失敗しても、スコアは出します
-- 分岐点のテストが今の依存で落ちるなど、比べる相手を作れなかったときは、テストを弱めたかを確かめられません。理由を警告として出し、失敗にはしません。作ったのにmutatorが比べられなかったとき（レポートの`comparison`が`unavailable`）は、仕組みの故障なので失敗にします
+- CIでは、`check (Linux)`がPRで同じ`pnpm mutation:diff`を`--kill-matrix`付きで実行し、テストを弱めた変更があれば失敗します。`check (Linux)`はマージに必須のチェックです。変更した行の検出漏れ（どのテストも届かないものを含む）は、PRの差分に警告として表示します。変更の中で飛ばしたテスト（`it.skip`など）と、`mutator.config.*`か`mutator.accepted.json`を変えたときも警告します。続けて全件を実行し、全体のスコアをジョブの概要（Summary）に出します。mainへのpushでは全件だけを実行します。判定が失敗しても、スコアは出します
+- 分岐点のテストが今の依存で落ちるなど、比べる相手を作れなかったときは、テストを弱めたかを確かめられないので、原因と直し方を出して失敗にします。多くは依存の更新でテストが壊れたときで、そのときは普段のテストも落ちます。作ったのにmutatorが比べられなかったとき（レポートの`comparison`が`unavailable`）も、仕組みの故障として失敗にします
 - 検出できなかったミュータントは、テストが足りないのか、コードが要らないのかを考えます。数字を満たすためだけのテストは書きません。手順は`node_modules/@mizchi/mutator/skills/mutation-test-loop/SKILL.md`にあります。どんな入力でも振る舞いが変わらない等価ミュータントだけを、`pnpm exec mutator accept <key> --reason <理由>`で`mutator.accepted.json`に記録します。キーは`pnpm exec mutator --reporter agent`の`gaps[].key`にあります。テストを弱めた変更を通すために記録してはいけません。弱めたアサーションや消したテストを戻すか、同じ振る舞いを確かめるテストを足します
 
 ### やめるとき
