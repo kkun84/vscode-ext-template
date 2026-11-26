@@ -1,0 +1,116 @@
+{
+  "base": {
+    "schemaVersion": "2",
+    "comparison": "unavailable",
+    "findings": [],
+    "framework": {
+      "name": "mutator",
+      "version": "0.4.5"
+    },
+    "files": {
+      "src/core/note.ts": {
+        "language": "typescript",
+        "mutants": [
+          {
+            "id": "lri4646151",
+            "mutatorName": "StringLiteral",
+            "replacement": "\"\"",
+            "location": {
+              "start": {
+                "line": 24,
+                "column": 55
+              },
+              "end": {
+                "line": 24,
+                "column": 58
+              }
+            },
+            "status": "Killed",
+            "killedBy": [
+              "src/core/note.test.ts#formatDate > 年が3桁なら0で埋める",
+              "src/services/create-note.test.ts#createNote > 入力欄の題名でノートを作り、開いて知らせる"
+            ],
+            "coveredBy": [
+              "src/services/create-note.test.ts#createNote > 入力欄の題名でノートを作り、開いて知らせる",
+              "src/services/create-note.test.ts#createNote > 引数で題名が渡されたら入力欄を使わない",
+              "src/services/create-note.test.ts#createNote > 書き込みに失敗したらNoteWriteFailedで失敗し、開かない",
+              "src/services/create-note.test.ts#createNote > 同名のファイルがあれば-2を付け、元のファイルは変えない",
+              "src/services/create-note.test.ts#createNote > 設定のフォルダに保存する",
+              "src/services/create-note.test.ts#createNoteの著者 > 設定があればそれを使う",
+              "src/services/create-note.test.ts#createNoteの著者 > 設定が空ならOSのユーザー名を使う",
+              "src/services/create-note.test.ts#createNoteの著者 > 設定が空でユーザー名も無ければ省く",
+              "src/core/note.test.ts#formatDate > 月日が1桁なら0で埋める",
+              "src/core/note.test.ts#formatDate > 年が3桁なら0で埋める",
+              "src/core/note.test.ts#formatDate > 年末の日付をそのまま返す",
+              "src/core/note.test.ts#noteFileName > 日付とslugからファイル名を作る",
+              "src/core/note.test.ts#renderNote > 著者があれば2行目に出す",
+              "src/core/note.test.ts#renderNote > 著者が無ければ著者の行を出さない",
+              "src/core/note.test.ts#renderNote > 著者が空文字でも著者の行を出さない"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "current": {
+    "schemaVersion": "2",
+    "comparison": "available",
+    "findings": [],
+    "framework": {
+      "name": "mutator",
+      "version": "0.4.5"
+    },
+    "files": {
+      "src/core/note.ts": {
+        "language": "typescript",
+        "mutants": [
+          {
+            "id": "lri4646151",
+            "mutatorName": "StringLiteral",
+            "replacement": "\"\"",
+            "location": {
+              "start": {
+                "line": 24,
+                "column": 55
+              },
+              "end": {
+                "line": 24,
+                "column": 58
+              }
+            },
+            "status": "Killed",
+            "killedBy": [
+              "src/core/note.test.ts#formatDate > 年が3桁なら0で埋める",
+              "src/services/create-note.test.ts#createNote > 入力欄の題名でノートを作り、開いて知らせる"
+            ],
+            "coveredBy": [
+              "src/services/create-note.test.ts#createNote > 入力欄の題名でノートを作り、開いて知らせる",
+              "src/services/create-note.test.ts#createNote > 引数で題名が渡されたら入力欄を使わない",
+              "src/services/create-note.test.ts#createNote > 書き込みに失敗したらNoteWriteFailedで失敗し、開かない",
+              "src/services/create-note.test.ts#createNote > 同名のファイルがあれば-2を付け、元のファイルは変えない",
+              "src/services/create-note.test.ts#createNote > 設定のフォルダに保存する",
+              "src/services/create-note.test.ts#createNoteの著者 > 設定があればそれを使う",
+              "src/services/create-note.test.ts#createNoteの著者 > 設定が空ならOSのユーザー名を使う",
+              "src/services/create-note.test.ts#createNoteの著者 > 設定が空でユーザー名も無ければ省く",
+              "src/core/note.test.ts#formatDate > 月日が1桁なら0で埋める",
+              "src/core/note.test.ts#formatDate > 年末の日付をそのまま返す",
+              "src/core/note.test.ts#noteFileName > 日付とslugからファイル名を作る",
+              "src/core/note.test.ts#renderNote > 著者があれば2行目に出す",
+              "src/core/note.test.ts#renderNote > 著者が無ければ著者の行を出さない",
+              "src/core/note.test.ts#renderNote > 著者が空文字でも著者の行を出さない"
+            ]
+          }
+        ]
+      }
+    },
+    "testChanges": {
+      "added": [],
+      "changed": [
+        "src/core/note.test.ts#formatDate > 年が3桁なら0で埋める",
+        "src/core/note.test.ts#formatDate > 年末の日付をそのまま返す",
+        "src/core/note.test.ts#formatDate > 月日が1桁なら0で埋める"
+      ],
+      "removed": []
+    }
+  }
+}

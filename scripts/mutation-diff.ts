@@ -22,6 +22,7 @@ import { spawnSync } from "node:child_process"
 import {
   closeSync,
   copyFileSync,
+  cpSync,
   existsSync,
   globSync,
   mkdirSync,
@@ -43,12 +44,15 @@ import {
   MutationReport,
   parseOptions,
   reviewBaselineFailure,
+  recheckCandidates,
   reviewDroppedSources,
   reviewDroppedTests,
   reviewFindings,
+  reviewRechecked,
   reviewSettingChanges,
   reviewSkippedTests,
-  reviewUnreadableReport
+  reviewUnreadableReport,
+  scopeHashes
 } from "./mutation-report.ts"
 
 const root = resolve(import.meta.dirname, "..")
@@ -239,8 +243,17 @@ const buildBaseline = async (base: string, worktree: string, temporary: string, 
 
 // 基準の全件の結果のうち、次の実行が比べる相手として読むsnapshotだけを写す。
 // mutatorは.mutator/scopes/<対象の範囲>.jsonと.mutator/snapshot.jsonを読む（src/snapshot-store.ts）。
-// 中断から再開するための.resume.sqliteと、レポートは写さない。
-const adoptBaseline = (worktree: string): void => {
+// 中断から再開するための.resume.sqliteと、レポートは写さない。基準のレポートとsnapshotは、
+// もう一度の実行（recheck）で使うので、一時ディレクトリに残す。
+const adoptBaseline = (worktree: string, temporary: string): void => {
+  for (const [from, to] of [
+    [".mutator/report/mutation.json", "base-report.json"],
+    [".mutator/snapshot.json", "base-snapshot.json"]
+  ] as const) {
+    if (existsSync(join(worktree, from))) {
+      copyFileSync(join(worktree, from), join(temporary, to))
+    }
+  }
   const target = join(root, ".mutator")
   rmSync(target, { recursive: true, force: true })
   mkdirSync(join(target, "scopes"), { recursive: true })
@@ -254,15 +267,65 @@ const adoptBaseline = (worktree: string): void => {
   }
 }
 
-const loadReport = (): { readonly report?: MutationReport; readonly error?: string } => {
-  if (!existsSync(join(root, reportPath))) {
+const loadReport = (path: string): { readonly report?: MutationReport; readonly error?: string } => {
+  if (!existsSync(path)) {
     return {}
   }
   try {
-    return { report: Schema.decodeUnknownSync(MutationReport)(JSON.parse(readFileSync(join(root, reportPath), "utf8"))) }
+    return { report: Schema.decodeUnknownSync(MutationReport)(JSON.parse(readFileSync(path, "utf8"))) }
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) }
   }
+}
+
+const readJson = (path: string): unknown => JSON.parse(readFileSync(path, "utf8"))
+
+// もう一度実行する回数。負荷で関係の無いテストが落ちて「検出した」になる見逃しは、続けて起きにくい。
+const RECHECKS = 2
+
+/**
+ * mutatorが前の結果を使い回して「検出した」としたミュータントを、前の結果を使わずに実行し直す
+ *（理由はmutation-report.tsのrecheckCandidates）。.mutatorを退けてから--onlyで実行し、終わったら戻す。
+ */
+const recheck = (current: MutationReport, temporary: string): ReadonlyArray<string> => {
+  const baseReport = loadReport(join(temporary, "base-report.json")).report
+  if (baseReport === undefined || !existsSync(join(temporary, "base-snapshot.json")) || !existsSync(join(root, ".mutator/snapshot.json"))) {
+    return []
+  }
+  const keys = recheckCandidates(
+    baseReport,
+    current,
+    scopeHashes(readJson(join(temporary, "base-snapshot.json"))),
+    scopeHashes(readJson(join(root, ".mutator/snapshot.json")))
+  )
+  if (keys.length === 0) {
+    return []
+  }
+  say(`前の結果を使い回したミュータント${keys.length}件を、前の結果を使わずに${RECHECKS}回実行し直します。`)
+  const held = join(temporary, "held-mutator")
+  cpSync(join(root, ".mutator"), held, { recursive: true })
+  const reruns: MutationReport[] = []
+  try {
+    for (const attempt of Array.from({ length: RECHECKS }, (_, index) => index + 1)) {
+      rmSync(join(root, ".mutator"), { recursive: true, force: true })
+      const directory = join(temporary, `recheck-${attempt}`)
+      const rerun = run(
+        process.execPath,
+        [mutatorCli(root), ...keys.flatMap((key) => ["--only", key]), "--reporter", "json", "--report-dir", directory],
+        root
+      )
+      const loaded = loadReport(join(directory, "mutation.json"))
+      if (!rerun.ok || loaded.report === undefined) {
+        say(tail(rerun.output))
+        return [reviewUnreadableReport(join(directory, "mutation.json"), loaded.error ?? "実行し直しに失敗しました。")]
+      }
+      reruns.push(loaded.report)
+    }
+  } finally {
+    rmSync(join(root, ".mutator"), { recursive: true, force: true })
+    cpSync(held, join(root, ".mutator"), { recursive: true })
+  }
+  return reviewRechecked(baseReport, current, keys, reruns)
 }
 
 const judge = async (
@@ -302,21 +365,23 @@ const judge = async (
     ...git("diff", "--name-only", base).output.split("\n"),
     ...git("ls-files", "--others", "--exclude-standard").output.split("\n")
   ]
-  const loaded = loadReport()
+  const loaded = loadReport(join(root, reportPath))
   const review =
     loaded.error === undefined
       ? reviewFindings(loaded.report, reportPath)
       : { lines: [reviewUnreadableReport(reportPath, loaded.error)], exitCode: 1 as const }
+  const rechecked = loaded.report === undefined ? [] : recheck(loaded.report, temporary)
   say(
     [
       ...reviewSettingChanges(changed, setupFiles),
       ...reviewSkippedTests(diff.output),
       ...droppedTests,
       ...droppedSources,
+      ...rechecked,
       ...review.lines
     ].join("\n")
   )
-  return droppedTests.length > 0 || droppedSources.length > 0 ? 1 : review.exitCode
+  return droppedTests.length > 0 || droppedSources.length > 0 || rechecked.length > 0 ? 1 : review.exitCode
 }
 
 // 同じ作業ツリーで2つ同時に動かすと、.mutatorを取り合ってmutatorが落ちる。Gitの管理ディレクトリに
@@ -367,7 +432,7 @@ const withBaseline = async (ref: string, killMatrix: boolean): Promise<number> =
     let scope: Scope
     try {
       scope = await buildBaseline(base, worktree, temporary, [...configFile, ...setupFiles])
-      adoptBaseline(worktree)
+      adoptBaseline(worktree, temporary)
     } finally {
       git("worktree", "remove", "--force", worktree)
       git("worktree", "prune")

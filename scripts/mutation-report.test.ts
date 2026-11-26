@@ -7,14 +7,17 @@ import {
   missingFrom,
   MutationReport,
   parseOptions,
+  recheckCandidates,
   regressionAdvice,
   reviewBaselineFailure,
   reviewDroppedSources,
   reviewDroppedTests,
   reviewFindings,
+  reviewRechecked,
   reviewSettingChanges,
   reviewSkippedTests,
-  reviewUnreadableReport
+  reviewUnreadableReport,
+  scopeHashes
 } from "./mutation-report.ts"
 
 const decode = Schema.decodeUnknownSync(MutationReport)
@@ -23,7 +26,14 @@ const decode = Schema.decodeUnknownSync(MutationReport)
 // pnpm mutation:diffで作った。判定に使わない項目（sourceなど）とミュータントは省いた。
 const fixture = (name: string): unknown => JSON.parse(readFileSync(new URL(`fixtures/${name}`, import.meta.url), "utf8"))
 
-const mutant = (id: string, line: number) => ({ id, mutatorName: "StringLiteral", replacement: '""', location: { start: { line } } })
+const mutant = (id: string, line: number, status = "Killed", killedBy: ReadonlyArray<string> = []) => ({
+  id,
+  mutatorName: "StringLiteral",
+  replacement: '""',
+  location: { start: { line } },
+  status,
+  killedBy
+})
 
 const files = { "src/core/note.ts": { mutants: [mutant("other", 3), mutant("weak", 24)] } }
 
@@ -271,5 +281,56 @@ describe("parseOptions", () => {
   it("知らない指定と、2つ以上のrefは、黙って無視せずに理由を返す", () => {
     expect(parseOptions(["--kill-matrx"])).toBe("知らない指定です: --kill-matrx")
     expect(parseOptions(["origin/main", "origin/dev"])).toBe("基準のrefは1つだけ指定できます: origin/main origin/dev")
+  })
+})
+
+describe("前の結果を使い回した「検出した」の確かめ直し", () => {
+  // 負荷をかけて再現した見逃しの実物の抜粋。基準で、関係の無いcreate-noteのテストも検出したテストに数えられ、
+  // 差分ではアサーションを消したのに、前の結果がそのまま使われて「検出した」のままだった。
+  const { base, current } = Schema.decodeUnknownSync(Schema.Struct({ base: MutationReport, current: MutationReport }))(
+    fixture("mutation-report-reused-kill.json")
+  )
+  const scopes = new Map([["lri4646151", "1juwxkiot46"]])
+
+  it("基準で検出したテストに、変えたテストと変わっていないテストを含み、今も検出したことになっているものを、確かめ直す", () => {
+    expect(current.findings.some((finding) => finding.kind === "detectionRegression")).toBe(false)
+    expect(recheckCandidates(base, current, scopes, scopes)).toEqual(["lri4646151"])
+  })
+
+  it("関数の中身が変わったもの、mutatorが既に報告したもの、検出したテストが変わっていないものは、確かめ直さない", () => {
+    expect(recheckCandidates(base, current, scopes, new Map([["lri4646151", "changed"]]))).toEqual([])
+    expect(recheckCandidates(base, { ...current, findings: [{ kind: "detectionRegression", key: "lri4646151" }] }, scopes, scopes)).toEqual(
+      []
+    )
+    expect(recheckCandidates(base, { ...current, testChanges: { added: [], changed: [], removed: [] } }, scopes, scopes)).toEqual([])
+    // 検出したテストが全部変わったものは、mutatorが実行し直すので要らない。
+    const allTouched = {
+      added: [],
+      changed: ["src/core/note.test.ts#formatDate > 年が3桁なら0で埋める"],
+      removed: ["src/services/create-note.test.ts#createNote > 入力欄の題名でノートを作り、開いて知らせる"]
+    }
+    expect(recheckCandidates(base, { ...current, testChanges: allTouched }, scopes, scopes)).toEqual([])
+  })
+
+  it("実行し直したどれかで検出されなければ、テストが弱くなったとして失敗にする", () => {
+    const survived = report([], "unavailable")
+    const rerun = { ...survived, files: { "src/core/note.ts": { mutants: [mutant("lri4646151", 24, "Survived")] } } }
+    const killed = { ...survived, files: { "src/core/note.ts": { mutants: [mutant("lri4646151", 24, "Killed", ["a.test.ts#一"])] } } }
+    expect(reviewRechecked(base, current, ["lri4646151"], [killed, rerun])).toEqual([
+      `::error file=src/core/note.ts,line=24,title=テストが弱くなった::変わっていないコードのミュータントlri4646151（StringLiteralで""に置き換え）を、前は「src/core/note.test.ts#formatDate > 年が3桁なら0で埋める」、「src/services/create-note.test.ts#createNote > 入力欄の題名でノートを作り、開いて知らせる」が検出していましたが、前の結果を使わずにもう一度実行すると、どのテストも検出しませんでした。${regressionAdvice}`
+    ])
+    expect(reviewRechecked(base, current, ["lri4646151"], [killed, killed])).toEqual([])
+  })
+
+  it("snapshotの行から、ミュータントごとの関数の中身のハッシュを読む", () => {
+    expect(
+      scopeHashes({
+        format: 2,
+        rows: [
+          ["lri4646151", 0, 4, "1juwxkiot46", "Killed", [], []],
+          [1, 2]
+        ]
+      })
+    ).toEqual(new Map([["lri4646151", "1juwxkiot46"]]))
   })
 })

@@ -12,7 +12,9 @@ const MutantRecord = Schema.Struct({
   id: Schema.String,
   mutatorName: Schema.String,
   replacement: Schema.String,
-  location: Schema.Struct({ start: Schema.Struct({ line: Schema.Finite }) })
+  location: Schema.Struct({ start: Schema.Struct({ line: Schema.Finite }) }),
+  status: Schema.String,
+  killedBy: Schema.Array(Schema.String)
 })
 
 type MutantRecord = typeof MutantRecord.Type
@@ -37,7 +39,11 @@ export const MutationReport = Schema.Struct({
   findings: Schema.Array(Finding),
   // 変更したテストファイルをテストランナーが拾っていない、などの結果を疑わせる事情。無ければ項目ごと無い。
   warnings: Schema.optionalKey(Schema.Array(Schema.Struct({ file: Schema.optionalKey(Schema.String), message: Schema.String }))),
-  files: Schema.Record(Schema.String, Schema.Struct({ mutants: Schema.Array(MutantRecord) }))
+  files: Schema.Record(Schema.String, Schema.Struct({ mutants: Schema.Array(MutantRecord) })),
+  // 前回と比べて足した、変えた、消したテスト。比べる相手があるときだけある。
+  testChanges: Schema.optionalKey(
+    Schema.Struct({ added: Schema.Array(Schema.String), changed: Schema.Array(Schema.String), removed: Schema.Array(Schema.String) })
+  )
 })
 
 export type MutationReport = typeof MutationReport.Type
@@ -318,6 +324,84 @@ export const parseOptions = (argv: ReadonlyArray<string>): Options | string => {
     killMatrix: argv.includes("--kill-matrix"),
     skipWithoutBase: argv.includes("--skip-without-base")
   }
+}
+
+// テストを弱めた変更の見逃しを防ぐ、もう一度の実行。
+//
+// mutatorは、前に検出したテストのどれかが変わっていなければ、前の「検出した」をそのまま使う。負荷の高い
+// ときに、そのミュータントと関係の無いテストがたまたま落ちると、基準でそのテストも「検出した」テストに
+// 数えられる。すると、本当に検出していたテストを弱めても、変わっていない方のテストを理由に前の結果が使われ、
+// 見逃す（実測で、基準の結果に関係の無いテストが検出したテストとして並んだ）。そこで、基準で検出した
+// テストに、変えたか消したテストと、変わっていないテストの両方を含み、今も検出したことになっている
+// ミュータントを、前の結果を使わずにもう一度実行して確かめる。検出したテストが全部変わったものは、
+// mutatorが実行し直すので要らない。
+
+const DETECTED: ReadonlySet<string> = new Set(["Killed", "Timeout"])
+const UNDETECTED: ReadonlySet<string> = new Set(["Survived", "NoCoverage"])
+
+const mutants = (report: MutationReport): ReadonlyMap<string, MutantRecord> =>
+  new Map(Object.values(report.files).flatMap((entry) => entry.mutants.map((mutant) => [mutant.id, mutant] as const)))
+
+const SnapshotRows = Schema.Struct({ rows: Schema.Array(Schema.Array(Schema.Unknown)) })
+
+/** mutatorのsnapshotから、ミュータントごとの関数の中身のハッシュを読む（node_modules/@mizchi/mutator/src/snapshot.tsの行の形）。 */
+export const scopeHashes = (snapshot: unknown): ReadonlyMap<string, string> =>
+  new Map(
+    Schema.decodeUnknownSync(SnapshotRows)(snapshot).rows.flatMap((row) =>
+      typeof row[0] === "string" && typeof row[3] === "string" ? [[row[0], row[3]] as const] : []
+    )
+  )
+
+/**
+ * もう一度実行して確かめるミュータント。基準で検出され、そのときのテストに変えたか消したテストと変わっていないテストを含み、
+ * 関数の中身が変わっておらず、今も検出したことになっていて、mutatorがまだテストが弱くなったと言っていないもの。
+ */
+export const recheckCandidates = (
+  base: MutationReport,
+  current: MutationReport,
+  baseScopes: ReadonlyMap<string, string>,
+  currentScopes: ReadonlyMap<string, string>
+): ReadonlyArray<string> => {
+  const touched = new Set([...(current.testChanges?.changed ?? []), ...(current.testChanges?.removed ?? [])])
+  const reported = new Set(current.findings.filter((finding) => finding.kind === "detectionRegression").map((finding) => finding.key))
+  const before = mutants(base)
+  return [...mutants(current).values()]
+    .filter((mutant) => {
+      const old = before.get(mutant.id)
+      return (
+        old !== undefined &&
+        old.status === "Killed" &&
+        old.killedBy.some((test) => touched.has(test)) &&
+        old.killedBy.some((test) => !touched.has(test)) &&
+        DETECTED.has(mutant.status) &&
+        !reported.has(mutant.id) &&
+        baseScopes.get(mutant.id) !== undefined &&
+        baseScopes.get(mutant.id) === currentScopes.get(mutant.id)
+      )
+    })
+    .map((mutant) => mutant.id)
+}
+
+/** もう一度実行した結果のどれかで検出されなかったミュータントを、テストを弱めた変更として失敗にする。 */
+export const reviewRechecked = (
+  base: MutationReport,
+  current: MutationReport,
+  keys: ReadonlyArray<string>,
+  reruns: ReadonlyArray<MutationReport>
+): ReadonlyArray<string> => {
+  const before = mutants(base)
+  const results = reruns.map((rerun) => mutants(rerun))
+  return keys
+    .filter((key) => results.some((result) => UNDETECTED.has(result.get(key)?.status ?? "")))
+    .map((key) => {
+      const located = locate(current, key)
+      return formatAnnotation({
+        level: "error",
+        title: "テストが弱くなった",
+        message: `変わっていないコードのミュータント${key}${located.change}を、前は${describeKillers(before.get(key)?.killedBy ?? [])}が検出していましたが、前の結果を使わずにもう一度実行すると、どのテストも検出しませんでした。${regressionAdvice}`,
+        ...position(located)
+      })
+    })
 }
 
 // mutatorの環境ハッシュ（node_modules/@mizchi/mutator/src/reuse.tsのenvironmentHash）に入るファイルのうち、
