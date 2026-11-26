@@ -4,12 +4,17 @@ import { describe, expect, it } from "vitest"
 import {
   formatAnnotation,
   isEnvironmentFile,
+  missingFrom,
   MutationReport,
+  parseOptions,
   regressionAdvice,
   reviewBaselineFailure,
+  reviewDroppedSources,
+  reviewDroppedTests,
   reviewFindings,
   reviewSettingChanges,
-  reviewSkippedTests
+  reviewSkippedTests,
+  reviewUnreadableReport
 } from "./mutation-report.ts"
 
 const decode = Schema.decodeUnknownSync(MutationReport)
@@ -171,6 +176,7 @@ describe("isEnvironmentFile", () => {
       "tsconfig.build.json",
       "vitest.config.ts",
       "mutator.config.json",
+      ".npmrc",
       "mutator.accepted.json",
       "README.md",
       "package.json.bak",
@@ -183,7 +189,8 @@ describe("isEnvironmentFile", () => {
       "tsconfig.json",
       "tsconfig.build.json",
       "vitest.config.ts",
-      "mutator.config.json"
+      "mutator.config.json",
+      ".npmrc"
     ])
   })
 })
@@ -207,5 +214,62 @@ describe("reviewSettingChanges", () => {
 
   it("根にない同名のファイルや、空の行は警告しない", () => {
     expect(reviewSettingChanges(["", "docs/mutator.config.json", "src/mutator.accepted.json", "mutator.configs"])).toEqual([])
+  })
+
+  it("テストの設定と準備のファイル、判定のスクリプトが変わったら、人が確かめるように警告する", () => {
+    expect(
+      reviewSettingChanges(
+        [
+          "vitest.config.ts",
+          "test/setup.ts",
+          "src/core/note.ts",
+          "scripts/mutation-diff.ts",
+          "scripts/mutation-report.ts",
+          "docs/vitest.config.ts"
+        ],
+        ["test/setup.ts"]
+      )
+    ).toEqual([
+      "::warning file=vitest.config.ts,title=テストの設定が変わった::vitest.config.tsが変わりました。テストの設定と準備のファイルは、expectを無力化するなどして、テストを弱めずに判定を外せます。人が確かめてください。",
+      "::warning file=test/setup.ts,title=テストの設定が変わった::test/setup.tsが変わりました。テストの設定と準備のファイルは、expectを無力化するなどして、テストを弱めずに判定を外せます。人が確かめてください。",
+      "::warning file=scripts/mutation-diff.ts,title=テストを弱めた変更の判定が変わった::scripts/mutation-diff.tsが変わりました。判定を書き換えると、テストを弱めた変更を通せます。人が確かめてください。",
+      "::warning file=scripts/mutation-report.ts,title=テストを弱めた変更の判定が変わった::scripts/mutation-report.tsが変わりました。判定を書き換えると、テストを弱めた変更を通せます。人が確かめてください。"
+    ])
+  })
+})
+
+describe("設定を狭めた変更", () => {
+  it("分岐点にあって今に無いものだけを、分岐点の並びで返す", () => {
+    expect(missingFrom(["a.test.ts", "b.test.ts", "c.test.ts"], ["c.test.ts", "a.test.ts", "d.test.ts"])).toEqual(["b.test.ts"])
+  })
+
+  it("集めなくなったテストファイルと、対象から外れたソースを、ファイルに付けたエラーにする", () => {
+    expect(reviewDroppedTests(["src/core/note.test.ts"])).toEqual([
+      "::error file=src/core/note.test.ts,title=テストファイルを集めなくなった::src/core/note.test.tsは、分岐点のVitestの設定では集めていたのに、今の設定では集めていません。テストファイルを残したまま対象から外すと、そのテストを消したのと同じになり、テストを弱めた変更として検出できません。vitest.config.*のincludeとexcludeを戻してください。"
+    ])
+    expect(reviewDroppedSources(["src/core/note.ts"])).toEqual([
+      "::error file=src/core/note.ts,title=ミューテーションテストの対象から外れた::src/core/note.tsは、分岐点のmutatorの設定では対象だったのに、今の設定では対象外です。対象から外すと、そのコードのテストを弱めても検出できません。mutator.config.*のincludeとexcludeを戻してください。"
+    ])
+  })
+})
+
+describe("reviewUnreadableReport", () => {
+  it("形の違うレポートを、エラーの注釈にする", () => {
+    expect(reviewUnreadableReport("mutation.json", "Missing key")).toBe(
+      "::error title=ミューテーションテストの結果を読めなかった::mutation.jsonの形が、判定の想定と違います。mutatorを上げたときは、scripts/mutation-report.tsのMutationReportを合わせてください。Missing key"
+    )
+  })
+})
+
+describe("parseOptions", () => {
+  it("基準のrefと2つの指定を読む", () => {
+    expect(parseOptions([])).toEqual({ ref: "origin/main", killMatrix: false, skipWithoutBase: false })
+    expect(parseOptions(["origin/dev", "--kill-matrix"])).toEqual({ ref: "origin/dev", killMatrix: true, skipWithoutBase: false })
+    expect(parseOptions(["--skip-without-base"])).toEqual({ ref: "origin/main", killMatrix: false, skipWithoutBase: true })
+  })
+
+  it("知らない指定と、2つ以上のrefは、黙って無視せずに理由を返す", () => {
+    expect(parseOptions(["--kill-matrx"])).toBe("知らない指定です: --kill-matrx")
+    expect(parseOptions(["origin/main", "origin/dev"])).toBe("基準のrefは1つだけ指定できます: origin/main origin/dev")
   })
 })

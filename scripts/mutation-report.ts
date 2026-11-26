@@ -209,27 +209,123 @@ export const reviewSkippedTests = (output: string): ReadonlyArray<string> =>
     })
   )
 
-// mutatorの設定と等価ミュータントの記録。書き換えると、テストを弱めずに検査の範囲を狭められる。
-const isSetting = (file: string): boolean => /^mutator\.config\.[^/]+$/u.test(file) || file === "mutator.accepted.json"
+// 変わると、テストを弱めずに判定を外せるファイル。機械では防ぎきれないので、人が確かめるように警告する。
+// mutatorの設定と等価ミュータントの記録は、検査する範囲を狭められる。
+const isMutatorSetting = (file: string): boolean => /^mutator\.config\.[^/]+$/u.test(file) || file === "mutator.accepted.json"
+// Vitestの設定と、setupFilesやglobalSetupは、expectを無力化するなどして、全部のテストを黙らせられる。
+const isTestSetting = (file: string, setupFiles: ReadonlySet<string>): boolean =>
+  /^vitest\.config\.[^/]+$/u.test(file) || setupFiles.has(file)
+// 判定の仕組みそのもの。
+const isJudge = (file: string): boolean => file === "scripts/mutation-diff.ts" || file === "scripts/mutation-report.ts"
 
-/** 変わったファイル（リポジトリの根からのパス）のうち、ミューテーションテストの設定を警告にする。 */
-export const reviewSettingChanges = (changedFiles: ReadonlyArray<string>): ReadonlyArray<string> =>
-  changedFiles
-    .filter((file) => isSetting(file))
-    .map((file) =>
-      formatAnnotation({
-        level: "warning",
-        title: "ミューテーションテストの設定が変わった",
-        file,
-        message: `${file}が変わりました。検査する範囲が狭まっていないか、動作の変わる壊し方を記録していないかを確かめてください。`
-      })
-    )
+const settingChange = (file: string, setupFiles: ReadonlySet<string>): Annotation | undefined => {
+  if (isMutatorSetting(file)) {
+    return {
+      level: "warning",
+      title: "ミューテーションテストの設定が変わった",
+      file,
+      message: `${file}が変わりました。検査する範囲が狭まっていないか、動作の変わる壊し方を記録していないかを確かめてください。`
+    }
+  }
+  if (isTestSetting(file, setupFiles)) {
+    return {
+      level: "warning",
+      title: "テストの設定が変わった",
+      file,
+      message: `${file}が変わりました。テストの設定と準備のファイルは、expectを無力化するなどして、テストを弱めずに判定を外せます。人が確かめてください。`
+    }
+  }
+  if (isJudge(file)) {
+    return {
+      level: "warning",
+      title: "テストを弱めた変更の判定が変わった",
+      file,
+      message: `${file}が変わりました。判定を書き換えると、テストを弱めた変更を通せます。人が確かめてください。`
+    }
+  }
+  return undefined
+}
+
+/**
+ * 変わったファイル（リポジトリの根からのパス）のうち、テストを弱めずに判定を外せるものを警告にする。
+ * `setupFiles`は、今のVitestの設定が読むsetupFilesとglobalSetup（根からのパス）。
+ */
+export const reviewSettingChanges = (
+  changedFiles: ReadonlyArray<string>,
+  setupFiles: ReadonlyArray<string> = []
+): ReadonlyArray<string> => {
+  const setup = new Set(setupFiles)
+  return changedFiles.flatMap((file) => {
+    const annotation = settingChange(file, setup)
+    return annotation === undefined ? [] : [formatAnnotation(annotation)]
+  })
+}
+
+/** `before`にあって`after`に無いもの。並びは`before`のまま。 */
+export const missingFrom = (before: ReadonlyArray<string>, after: ReadonlyArray<string>): ReadonlyArray<string> => {
+  const kept = new Set(after)
+  return before.filter((file) => !kept.has(file))
+}
+
+/** 分岐点の設定では集めていたのに、今の設定では集めないテストファイル（今もあるもの）を失敗にする。 */
+export const reviewDroppedTests = (files: ReadonlyArray<string>): ReadonlyArray<string> =>
+  files.map((file) =>
+    formatAnnotation({
+      level: "error",
+      title: "テストファイルを集めなくなった",
+      file,
+      message: `${file}は、分岐点のVitestの設定では集めていたのに、今の設定では集めていません。テストファイルを残したまま対象から外すと、そのテストを消したのと同じになり、テストを弱めた変更として検出できません。vitest.config.*のincludeとexcludeを戻してください。`
+    })
+  )
+
+/** 分岐点の設定ではミューテーションテストの対象だったのに、今の設定では対象外のソースファイル（今もあるもの）を失敗にする。 */
+export const reviewDroppedSources = (files: ReadonlyArray<string>): ReadonlyArray<string> =>
+  files.map((file) =>
+    formatAnnotation({
+      level: "error",
+      title: "ミューテーションテストの対象から外れた",
+      file,
+      message: `${file}は、分岐点のmutatorの設定では対象だったのに、今の設定では対象外です。対象から外すと、そのコードのテストを弱めても検出できません。mutator.config.*のincludeとexcludeを戻してください。`
+    })
+  )
+
+/** mutatorのレポートを読めなかったときの注釈。形が変わったときなど。 */
+export const reviewUnreadableReport = (path: string, detail: string): string =>
+  formatAnnotation({
+    level: "error",
+    title: "ミューテーションテストの結果を読めなかった",
+    message: `${path}の形が、判定の想定と違います。mutatorを上げたときは、scripts/mutation-report.tsのMutationReportを合わせてください。${detail}`
+  })
+
+export interface Options {
+  readonly ref: string
+  readonly killMatrix: boolean
+  readonly skipWithoutBase: boolean
+}
+
+/** mutation-diff.tsの引数を読む。知らない指定は黙って無視せず、理由を返す。 */
+export const parseOptions = (argv: ReadonlyArray<string>): Options | string => {
+  const unknown = argv.filter((arg) => arg.startsWith("-") && arg !== "--kill-matrix" && arg !== "--skip-without-base")
+  const refs = argv.filter((arg) => !arg.startsWith("-"))
+  if (unknown.length > 0) {
+    return `知らない指定です: ${unknown.join(" ")}`
+  }
+  if (refs.length > 1) {
+    return `基準のrefは1つだけ指定できます: ${refs.join(" ")}`
+  }
+  return {
+    ref: refs[0] ?? "origin/main",
+    killMatrix: argv.includes("--kill-matrix"),
+    skipWithoutBase: argv.includes("--skip-without-base")
+  }
+}
 
 // mutatorの環境ハッシュ（node_modules/@mizchi/mutator/src/reuse.tsのenvironmentHash）に入るファイルのうち、
 // この雛形の根にありうるもの。Node.jsの版とmutatorの設定もハッシュに入る。テストランナーの設定
 //（vitest.config.*）と、TypeScriptの設定（tsconfig*.json）、mutatorの設定も、今と同じものを使う。
+// .npmrcはハッシュに入らないが、依存を今と同じ設定で入れるために写す。
 const ENVIRONMENT_FILE =
-  /^(?:package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|package-lock\.json|yarn\.lock|bun\.lockb?|tsconfig.*\.json|vitest\.config\..+|mutator\.config\..+)$/u
+  /^(?:package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|package-lock\.json|yarn\.lock|bun\.lockb?|tsconfig.*\.json|vitest\.config\..+|mutator\.config\..+|\.npmrc)$/u
 
 /** リポジトリの根にあるファイル名のうち、基準を作るときに今の作業ツリーから写すもの。 */
 export const isEnvironmentFile = (name: string): boolean => ENVIRONMENT_FILE.test(name)
