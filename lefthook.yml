@@ -23,5 +23,7 @@ pre-push:
   jobs:
     - name: check
       run: pnpm check
+    # origin/mainとの差分のミューテーションテスト。テストを弱めた変更があればpushを止める。
+    # 検出できなかったミュータントは表示だけで止めない。
     - name: mutation
       run: pnpm mutation:diff

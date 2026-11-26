@@ -107,9 +107,11 @@ rolldownを直接呼ぶ`scripts/build.ts`で、2つのバンドルを作る。
 
 カバレッジは、コードが実行されたことしか示さない。実装を書き換えてもテストが落ちない箇所を見つけるために、`@mizchi/mutator`で`core`と`services`の実装を1か所ずつ書き換え、単体テストと結合テストが落ちるかを確かめる。
 
-- 結果は指標として扱い、失敗にはしない。100%を強制すると、ミュータントを落とすためだけに実装をなぞるテストが増える。改善は、PRの警告と、AIへの指示（`AGENTS.md`）で働きかける
-- 手元のpre-pushは、`origin/main`との差分にあるミュータントだけを実行する。数秒で終わる
-- CIは、PRで変更した行の検出漏れをPRの差分に警告として表示する。GitHubが1ステップに表示する警告は10件までなので、変更した行に絞る。続けて全件を実行して全体のスコアをジョブの概要に出す。テストを弱めたり消したりしただけの変更は、実装の差分に現れないので、このスコアの低下で分かる
+- 生き残りとスコアは指標として扱い、失敗にはしない。100%を強制すると、ミュータントを落とすためだけに実装をなぞるテストが増える。改善は、PRの警告と、AIへの指示（`AGENTS.md`）で働きかける
+- テストを弱めた変更だけは失敗にする。変わっていないコードについて、前は検出できたミュータントを今は検出できない場合で、mutatorの`--include-test-changes`が`detectionRegression`として報告する。実装の差分に現れないので、スコアの低下だけでは見落とす。判定は`scripts/mutation-report.ts`に置き、何も検出しない新しいテスト（`newTestNoKills`）は警告に留める。`mutator accept`で通すことはしない。`mutator.accepted.json`は等価ミュータント専用である
+- 手元のpre-pushは、`origin/main`との差分と、変更したテストが確かめるコードのミュータントだけを実行し、判定する。数秒で終わる
+- CIは、mainへのpushで全件を実行し、結果をActionsのキャッシュに保存する。PRはそれを復元して比べる基準にし、テストを弱めた変更で`check (Linux)`を失敗させる。`check (Linux)`はマージに必須のチェックである。変更した行の検出漏れはPRの差分に警告として表示する。GitHubが1ステップに表示する警告は10件までなので、変更した行に絞る。続けて全件を実行して全体のスコアをジョブの概要に出す
+- mutatorの設定（`mutator.config.*`）と`mutator.accepted.json`を変えると、テストを弱めずに検査の範囲を狭められるので、PRで変わったら警告する
 - `src/services/ports.ts`は対象から外す。サービスの識別子の文字列だけで、空にしても観測できない
 - 等価ミュータントは、理由を付けて`mutator.accepted.json`に記録する
 
@@ -149,12 +151,12 @@ VS Codeの実行ファイルは、環境変数`VSCODE_EXECUTABLE`があればそ
 - Nixのflakeが、Node.js 24、pnpm 12、shellcheck、actionlintを固定する。E2E用の`e2e`シェルは、VS Codeとxvfbも加える。nixpkgsは安定版のチャンネルにし、7日以上前のrevに固定する
 - `.envrc`に`use flake`を置く。direnvは補助で、無くても`nix develop`で同じ環境に入れる
 - pnpmは、公開から7日以上経った版だけを入れる。依存のインストールスクリプトは、`allowBuilds`で許可したものだけを動かす
-- lefthookで、pre-commitに変更したファイルの整形とlint、pre-pushに`pnpm check`と差分のミューテーションテストを動かす
+- lefthookで、pre-commitに変更したファイルの整形とlint、pre-pushに`pnpm check`と差分のミューテーションテストを動かす。テストを弱めた変更はpushを止める
 
 ## CI
 
 - LinuxとWindowsで、lint、型検査、テスト、ビルド、E2Eを動かす。有名な拡張の多くがこの2つを使っている。WindowsではNixが動かないので、Node.jsとpnpmを直接入れる。版は`.node-version`と`package.json`の`packageManager`から読む。`engines.node`は`^24.22.1`の範囲にする。完全に固定すると、Node.jsを自前で用意するDependabotがインストールで止まるため。Linuxでは`scripts/check-env.ts`が、Nixの入れたNode.jsとpnpmがこの2つと一致することを検査する。こうして、版を書く場所を`flake.lock`、`.node-version`、`package.json`に限り、食い違えばCIで落とす
-- Linuxでは、ミューテーションテストも動かす。失敗にはせず、PRで変更した行の検出漏れを警告として表示する
+- Linuxでは、ミューテーションテストも動かす。PRで変更した行の検出漏れは警告として表示し、テストを弱めた変更だけを失敗にする
 - CIは、手元の`pnpm check`がまとめて動かす検査を、1つずつのステップに分けて動かす。どの検査で落ちたかが一覧で分かる。`pnpm check`に検査を足したら、`ci.yml`にも同じステップを足す
 - CodeQLと、プルリクエストで増える依存関係のレビューを動かす。既に入っている依存の`pnpm audit`は、週1回の定期実行で動かす。プルリクエストで動かすと、修正版の無い勧告が出たときに無関係な変更まで落ちる
 - Actionsは、タグではなくコミットのハッシュで固定する。リポジトリの設定（`.github/settings/`）でもハッシュでの固定を必須にする

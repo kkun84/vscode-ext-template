@@ -14,10 +14,11 @@ Effect v4で書くVS Code拡張機能の雛形です。設計は[docs/design.md]
 - `pnpm check`: lint、型検査、テストとカバレッジ、ビルド、サイズの上限、`.vsix`の中身
 - `pnpm test:e2e`: 実際のエディタを起動するE2Eテスト。Linuxでは`nix develop .#e2e`の中で`xvfb-run -a pnpm test:e2e`
 
-`src/core`か`src/services`を変えたら、`pnpm mutation:diff`の結果も見直します。テストが検出できないミュータント（生き残りと、テストの届かないもの）があっても失敗にはなりません。
+`src/core`か`src/services`かそのテストを変えたら、`pnpm mutation:diff`の結果も見直します。テストが検出できないミュータント（生き残りと、テストの届かないもの）があっても失敗にはなりません。テストを弱めた変更（変わっていないコードについて、前は検出できたミュータントを今は検出できない）だけは、pre-pushとCIで失敗します。
 
 - 検出できないミュータントは、テストが足りないのか、コードが要らないのかを判断します
 - テストを足すときは、呼び出す側から見える振る舞いを確かめます。ミュータントを落とすためだけに実装をなぞるテストは書きません
+- テストを弱めた変更で失敗したら、弱めたアサーションや消したテストを戻すか、同じ振る舞いを確かめるテストを足します
 - 手順は`node_modules/@mizchi/mutator/skills/mutation-test-loop/SKILL.md`に従います
 - 等価ミュータントだけを`pnpm exec mutator accept <key> --reason <理由>`で`mutator.accepted.json`に記録します。キーは`pnpm exec mutator --reporter agent`の`gaps[].key`にあります。テストを弱めた変更を通すために記録してはいけません。ミューテーションテストから外すものは、コメントではなく`mutator.config.json`の`exclude`に書きます。PRで`mutator.config.*`か`mutator.accepted.json`を変えると、CIが警告を出します
 

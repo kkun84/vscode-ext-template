@@ -53,22 +53,23 @@ jobs:
         run: pnpm budget
       - name: Check the .vsix contents
         run: pnpm check:vsix
-      # ミューテーションテストは指標で、検出漏れがあっても失敗にしない。
-      # PRでは、変更した行の検出漏れ（どのテストも届かないものを含む）を差分に警告として出す。
+      # ミューテーションテストの結果は指標で、検出できなかったミュータントがあっても失敗にしない。
+      # 失敗にするのは、テストを弱めた変更（変わっていないコードについて、前は検出できたミュータントを
+      # 今は検出できない）だけ。比べる前回の結果は、mainへのpushで保存したキャッシュから復元する。
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: .mutator
+          key: mutator-${{ github.sha }}
+          restore-keys: mutator-
+      # PRでは、変更した行と、変更したテストが確かめるコードのミュータントを実行する。変更した行の検出漏れ
+      # （どのテストも届かないものを含む）は、mutatorが差分に警告として出す。続けて結果を判定し、
+      # テストを弱めた変更があれば失敗させる。何も検出しない新しいテストと、mutatorの設定の変更は警告にする。
       - name: Mutation tests (changed lines)
         if: github.event_name == 'pull_request'
-        run: pnpm exec mutator --since "origin/${GITHUB_BASE_REF}"
-      # mutatorの設定と等価ミュータントの記録を書き換えると、失敗させずに検査の範囲を狭められるので、PRで変わったら警告する。
-      - name: Mutation settings changes
-        if: github.event_name == 'pull_request'
-        shell: bash
         run: |
-          git diff --name-only "origin/${GITHUB_BASE_REF}...HEAD" -- 'mutator.config.*' mutator.accepted.json |
-            while read -r file; do
-              echo "::warning file=${file},title=ミューテーションテストの設定が変わった::${file}が変わりました。検査する範囲が狭まっていないか、動作の変わる壊し方を記録していないかを確かめてください。"
-            done
-      # 全件で全体のスコアを出し、ジョブの概要に書く。テストを弱めたり消したりしただけの変更は、
-      # ここでスコアが下がる。警告は上のステップに任せるので、GITHUB_ACTIONSを空にして出さない。
+          pnpm exec mutator --since "origin/${GITHUB_BASE_REF}" --include-test-changes --kill-matrix --reporter text --reporter json
+          pnpm mutation:findings "origin/${GITHUB_BASE_REF}"
+      # 全件で全体のスコアを出し、ジョブの概要に書く。警告は上のステップに任せるので、GITHUB_ACTIONSを空にして出さない。
       - name: Mutation tests (all)
         run: |
           GITHUB_ACTIONS='' pnpm mutation | tee "$RUNNER_TEMP/mutation.txt"
@@ -78,6 +79,12 @@ jobs:
             grep -E '^(mutants|Killed|score)' "$RUNNER_TEMP/mutation.txt" || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+      # mainの全件の結果を、PRが比べる基準として保存する。
+      - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        if: github.event_name == 'push'
+        with:
+          path: .mutator
+          key: mutator-${{ github.sha }}
 
   e2e:
     name: e2e (Linux)
