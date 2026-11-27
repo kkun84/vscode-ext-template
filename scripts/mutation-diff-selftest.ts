@@ -6,6 +6,7 @@
 // 対象にした設定でコミットする。そのコミットをorigin/mainとする。次を確かめる。
 // - 何も変えずに動かすと、終了コード0で終わる
 // - 関数の中を確かめるテストを1つ消すと、テストが弱くなったとして終了コード1で終わる
+// - テストの題名だけを変えると、消したか題名を変えたテストとして警告し、終了コード0で終わる
 // - モジュールの直下の正規表現を確かめるアサーションを消すと、終了コード1で終わる。このミュータントは
 //   mutatorの差分の実行に選ばれないので、mutation-diff.tsが実行し直して見つける
 // - 同じことを、テストが呼ぶヘルパーだけを弱めて行っても、終了コード1で終わる
@@ -180,6 +181,8 @@ try {
   }
   writeFileSync(join(repo, "src/core/selftest-sample.test.ts"), without("上限以下なら"))
   const weakened = { name: "関数の中を確かめるテストを消す", ...diff() }
+  writeFileSync(join(repo, "src/core/selftest-sample.test.ts"), tests.replace("上限以下ならそのまま返す", "上限以下なら値を変えない"))
+  const renamed = { name: "テストの題名だけを変える", ...diff() }
   // テストは残し、アサーションだけを消す。テストを消すとmutatorが自分で見つけるので、この形で確かめる。
   const withoutWordAssertions = tests.replace(
     '  expect(isWord("ab1")).toBe(false)\n  expect(isWord("1abc")).toBe(false)\n  expect(isWord("")).toBe(false)\n',
@@ -214,13 +217,26 @@ try {
     without("絶対値を返す").replace("clamp, isWord, magnitude", "clamp, isWord")
   )
   const typeHidden = { name: "tsconfig.jsonでミュータントをCompileErrorにし、それを検出していたテストも消す", ...diff() }
-  const cases = [unchanged, weakened, topLevel, viaHelper, since, timeBudget, excluded, excludedWeakened, excludedWithSource, typeHidden]
+  const cases = [
+    unchanged,
+    weakened,
+    renamed,
+    topLevel,
+    viaHelper,
+    since,
+    timeBudget,
+    excluded,
+    excludedWeakened,
+    excludedWithSource,
+    typeHidden
+  ]
   for (const result of cases) {
     process.stdout.write(`--- ${result.name}: 終了コード${result.status}\n${result.output}\n`)
   }
   const passed = check(cases, [
     { status: 0, text: "判定の結果: エラー0件" },
     { status: 1, text: "title=テストが弱くなった::" },
+    { status: 0, text: "title=テストを消したか、題名を変えた::" },
     { status: 1, text: "差分の実行で選ばれなかったため実行し直すと" },
     { status: 1, text: "差分の実行で選ばれなかったため実行し直すと" },
     { status: 1, text: "mutator.config.jsonにsince（" },

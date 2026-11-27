@@ -26,6 +26,7 @@ Effect v4で書くVS Code拡張機能の雛形です。設計は[docs/design.md]
 - 「実行し直しの結果が想定外」「設定で外れたミュータントを確かめられなかった」「実行しなかったミュータントがある」「ミューテーションテストの結果を読めなかった」で失敗したら、上に表示されたmutatorの出力から原因を直します。黙って通す変更はしません
 - テストの設定と準備のファイル（`vitest.config.*`、`setupFiles`、`globalSetup`）、TypeScriptの設定（`tsconfig*.json`）、mutatorの設定、`mutator.accepted.json`、判定のスクリプト（`scripts/mutation-diff.ts`、`scripts/mutation-report.ts`）、それを呼ぶ`package.json`の`scripts`、`lefthook.yml`、`.github/workflows`を変えたPRは、人が確かめます。テストを弱めずに判定を外せるためです。PRの概要欄に、変えた理由を書きます
 - 何も検出しない新しいテストは、手元でもCIでも警告します
+- 消したテストも警告します。他のテストが同じミュータントを検出していれば失敗にならないので、意図した削除かを確かめます
 - 手順は`node_modules/@mizchi/mutator/skills/mutation-test-loop/SKILL.md`に従います
 - 等価ミュータントだけを`pnpm exec mutator accept <key> --reason <理由>`で`mutator.accepted.json`に記録します。キーは`pnpm exec mutator --reporter agent`の`gaps[].key`にあります。テストを弱めた変更を通すために記録してはいけません。ミューテーションテストから外すものは、コメントではなく`mutator.config.json`の`exclude`に書きます。PRで`mutator.config.*`か`mutator.accepted.json`を変えると、CIが警告を出します
 

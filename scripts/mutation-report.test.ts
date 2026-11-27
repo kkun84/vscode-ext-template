@@ -62,14 +62,14 @@ describe("mutator 0.4.5の実物のレポート", () => {
       "::warning title=何も検出しない新しいテスト::「src/core/note.test.ts#呼ぶだけ > 何も確かめない」は、どのミュータントも検出しません。振る舞いを確かめるアサーションがあるかを見直してください。"
     ])
     expect(summarize(review.lines, review.counts)).toEqual({
-      line: "判定の結果: エラー1件、警告1件（うちmutatorの報告: テストが弱くなった箇所1件、何も検出しない新しいテスト1件、テストが検出できないミュータント0件）。エラーがあるので失敗にします。",
+      line: "判定の結果: エラー1件、警告1件（うちmutatorの報告: テストが弱くなった箇所1件、何も検出しない新しいテスト1件、テストが検出できないミュータント0件、消したテスト0件）。エラーがあるので失敗にします。",
       exitCode: 1
     })
   })
 
   it("変更の無いときは、何も出さずに成功する", () => {
     const review = reviewFindings(decode(fixture("mutation-report-unchanged.json")), "mutation.json")
-    expect(review).toEqual({ lines: [], counts: { regressions: 0, idle: 0, gaps: 0 } })
+    expect(review).toEqual({ lines: [], counts: { regressions: 0, idle: 0, gaps: 0, removed: 0 } })
     expect(summarize(review.lines, review.counts).exitCode).toBe(0)
   })
 })
@@ -131,7 +131,7 @@ describe("reviewFindings", () => {
     ])
     expect(reviewFindings(report([{ kind: "mutationGap", key: "other" }]), "mutation.json")).toMatchObject({
       lines: [expect.stringMatching(/^::warning /u), expect.stringContaining("失敗にしません")],
-      counts: { regressions: 0, idle: 0, gaps: 1 }
+      counts: { regressions: 0, idle: 0, gaps: 1, removed: 0 }
     })
   })
 
@@ -146,7 +146,7 @@ describe("reviewFindings", () => {
         "::warning file=src/a.spec.ts,title=ミューテーションテストの結果を疑わせる事情::not collected",
         "::warning title=ミューテーションテストの結果を疑わせる事情::child process"
       ],
-      counts: { regressions: 0, idle: 0, gaps: 0 }
+      counts: { regressions: 0, idle: 0, gaps: 0, removed: 0 }
     })
   })
 
@@ -155,6 +155,30 @@ describe("reviewFindings", () => {
       lines: [
         "::error title=ミューテーションテストの結果が無い::.mutator/report/mutation.jsonがありません。先にmutatorを--reporter jsonを付けて実行してください。"
       ]
+    })
+  })
+})
+
+describe("reviewFindingsの消したテスト", () => {
+  it("消したテストは、ファイルに付けた警告にして成功する。同じファイルにテストを足していれば、題名を変えただけかもしれないと書く", () => {
+    const review = reviewFindings(
+      {
+        ...report([]),
+        testChanges: {
+          added: ["src/core/word.test.ts#新しい題名"],
+          changed: ["src/core/note.test.ts#残した"],
+          removed: ["src/core/note.test.ts#消した", "src/core/word.test.ts#古い題名"]
+        }
+      },
+      "mutation.json"
+    )
+    expect(review.lines).toEqual([
+      "::warning file=src/core/note.test.ts,title=テストを消した::「src/core/note.test.ts#消した」を消しました。他のテストが同じミュータントを検出していれば、失敗にはしません。意図した削除かを、人が確かめてください。",
+      "::warning file=src/core/word.test.ts,title=テストを消したか、題名を変えた::「src/core/word.test.ts#古い題名」を消しました。同じファイルにテストを足しているので、題名を変えただけかもしれません。題名を変えただけなら、そのままでかまいません。他のテストが同じミュータントを検出していれば、失敗にはしません。意図した削除かを、人が確かめてください。"
+    ])
+    expect(summarize(review.lines, review.counts)).toEqual({
+      line: "判定の結果: エラー0件、警告2件（うちmutatorの報告: テストが弱くなった箇所0件、何も検出しない新しいテスト0件、テストが検出できないミュータント0件、消したテスト2件）。エラーはありません。",
+      exitCode: 0
     })
   })
 })
@@ -169,7 +193,7 @@ describe("summarize", () => {
       ...review.lines
     ]
     expect(summarize(lines, review.counts)).toEqual({
-      line: "判定の結果: エラー2件、警告1件（うちmutatorの報告: テストが弱くなった箇所0件、何も検出しない新しいテスト0件、テストが検出できないミュータント0件）。エラーがあるので失敗にします。",
+      line: "判定の結果: エラー2件、警告1件（うちmutatorの報告: テストが弱くなった箇所0件、何も検出しない新しいテスト0件、テストが検出できないミュータント0件、消したテスト0件）。エラーがあるので失敗にします。",
       exitCode: 1
     })
   })
@@ -179,7 +203,7 @@ describe("summarize", () => {
       line: "判定の結果: エラー1件、警告0件。エラーがあるので失敗にします。",
       exitCode: 1
     })
-    expect(summarize(reviewSettingChanges(["vitest.config.ts"]), { regressions: 0, idle: 0, gaps: 0 }).exitCode).toBe(0)
+    expect(summarize(reviewSettingChanges(["vitest.config.ts"]), { regressions: 0, idle: 0, gaps: 0, removed: 0 }).exitCode).toBe(0)
     expect(summarize([]).line).toBe("判定の結果: エラー0件、警告0件。エラーはありません。")
   })
 })

@@ -5,7 +5,8 @@
 //（detectionRegression）ときと、判定が自分で見つけたテストを弱めた変更（実行し直し、設定で外れたもの、
 // 集めなくなったテストなど）と、基準と比べられなかったとき。比べられないのは、基準を作った後では
 // 仕組みの故障なので、黙って通さない。何も検出しない新しいテスト（newTestNoKills）と、
-// 変更した行の検出できないミュータントは警告にする。スコアは表示だけで、この判定には使わない。
+// 変更した行の検出できないミュータントと、消したテスト（testChanges.removed）は警告にする。
+// スコアは表示だけで、この判定には使わない。
 // 終了コードは、出したエラーの注釈の有無で決める（summarize）。
 
 import { Schema } from "effect"
@@ -57,6 +58,7 @@ export interface MutatorCounts {
   readonly regressions: number
   readonly idle: number
   readonly gaps: number
+  readonly removed: number
 }
 
 export interface Review {
@@ -85,6 +87,12 @@ export const formatAnnotation = (annotation: Annotation): string => {
     `title=${escapeProperty(annotation.title)}`
   ]
   return `::${annotation.level} ${properties.join(",")}::${escapeData(annotation.message)}`
+}
+
+// テストのid（src/core/a.test.ts#suite > name）のファイル。
+const fileOfTest = (test: string): string => {
+  const at = test.indexOf("#")
+  return at === -1 ? test : test.slice(0, at)
 }
 
 interface Located {
@@ -145,6 +153,21 @@ const noKills = (finding: Finding): Annotation => ({
   message: `「${finding.test ?? ""}」は、どのミュータントも検出しません。振る舞いを確かめるアサーションがあるかを見直してください。`
 })
 
+// mutatorはテストをid（ファイル#題名）で比べるので、題名を変えたテストは、消したテストと足したテストになる。
+// 中身が同じかは分からないので、同じファイルに足したテストがあれば、題名を変えただけかもしれないと書く。
+const removedTest = (report: MutationReport, test: string): Annotation => {
+  const file = fileOfTest(test)
+  const renamed = (report.testChanges?.added ?? []).some((added) => fileOfTest(added) === file)
+  return {
+    level: "warning",
+    title: renamed ? "テストを消したか、題名を変えた" : "テストを消した",
+    message: `「${test}」を消しました。${
+      renamed ? "同じファイルにテストを足しているので、題名を変えただけかもしれません。題名を変えただけなら、そのままでかまいません。" : ""
+    }他のテストが同じミュータントを検出していれば、失敗にはしません。意図した削除かを、人が確かめてください。`,
+    file
+  }
+}
+
 const caveat = (warning: { readonly file?: string; readonly message: string }): Annotation => ({
   level: "warning",
   title: "ミューテーションテストの結果を疑わせる事情",
@@ -183,17 +206,20 @@ export const reviewFindings = (report: MutationReport | undefined, path: string)
     .map((finding) => gap(report, finding))
   const idle = of("newTestNoKills").map((finding) => noKills(finding))
   const caveats = (report.warnings ?? []).map((warning) => caveat(warning))
+  const removed = (report.testChanges?.removed ?? []).map((test) => removedTest(report, test))
   const broken = report.comparison === "unavailable"
   return {
     lines: [
-      ...[...(broken ? [unavailable] : []), ...regressions, ...idle, ...caveats, ...gaps].map((annotation) => formatAnnotation(annotation)),
+      ...[...(broken ? [unavailable] : []), ...regressions, ...idle, ...removed, ...caveats, ...gaps].map((annotation) =>
+        formatAnnotation(annotation)
+      ),
       ...(gaps.length === 0
         ? []
         : [
             `テストが検出できないミュータントは失敗にしません。テストが足りないのか、コードが要らないのかを見直してください。手順は${guide}にあります。`
           ])
     ],
-    counts: { regressions: regressions.length, idle: idle.length, gaps: gaps.length }
+    counts: { regressions: regressions.length, idle: idle.length, gaps: gaps.length, removed: removed.length }
   }
 }
 
@@ -212,7 +238,7 @@ export const summarize = (lines: ReadonlyArray<string>, counts?: MutatorCounts):
   const detail =
     counts === undefined
       ? ""
-      : `（うちmutatorの報告: テストが弱くなった箇所${counts.regressions}件、何も検出しない新しいテスト${counts.idle}件、テストが検出できないミュータント${counts.gaps}件）`
+      : `（うちmutatorの報告: テストが弱くなった箇所${counts.regressions}件、何も検出しない新しいテスト${counts.idle}件、テストが検出できないミュータント${counts.gaps}件、消したテスト${counts.removed}件）`
   return {
     line: `判定の結果: エラー${errors}件、警告${warnings}件${detail}。${errors > 0 ? "エラーがあるので失敗にします。" : "エラーはありません。"}`,
     exitCode: errors > 0 ? 1 : 0
@@ -418,12 +444,6 @@ const SnapshotDeps = Schema.Struct({ deps: Schema.optionalKey(Schema.Record(Sche
 /** mutatorのsnapshotから、テストファイルごとに読み込んだファイルを読む。 */
 export const snapshotDeps = (snapshot: unknown): ReadonlyMap<string, ReadonlyArray<string>> =>
   new Map(Object.entries(Schema.decodeUnknownSync(SnapshotDeps)(snapshot).deps ?? {}))
-
-// テストのid（src/core/a.test.ts#suite > name）のファイル。
-const fileOfTest = (test: string): string => {
-  const at = test.indexOf("#")
-  return at === -1 ? test : test.slice(0, at)
-}
 
 /**
  * 変わったテストかを返す関数。`changedFiles`は分岐点からの差分のファイル（根からのパス）、`deps`は基準と
