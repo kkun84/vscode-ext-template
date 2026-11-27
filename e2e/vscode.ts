@@ -7,7 +7,6 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { _electron as electron, type ElectronApplication, type Page } from "@playwright/test"
-import { downloadAndUnzipVSCode } from "@vscode/test-electron"
 
 export type ExtensionKind = "desktop" | "web"
 
@@ -29,9 +28,14 @@ export interface Editor {
 
 const repository = resolve(import.meta.dirname, "..")
 
-// LinuxのCIではNixがnixpkgsのVSCodiumを渡す。無ければ最新の安定版のVS Codeを取ってくる。
-const executable = (): Promise<string> =>
-  process.env["VSCODE_EXECUTABLE"] === undefined ? downloadAndUnzipVSCode("stable") : Promise.resolve(process.env["VSCODE_EXECUTABLE"])
+// 実行ファイルはglobal-setup.tsが用意する。
+const executable = (): string => {
+  const path = process.env["VSCODE_EXECUTABLE"]
+  if (path === undefined) {
+    throw new Error("VSCODE_EXECUTABLE is not set. Run the E2E tests with playwright.config.ts, whose globalSetup sets it.")
+  }
+  return path
+}
 
 const writeFiles = async (root: string, files: Readonly<Record<string, string>>): Promise<void> => {
   for (const [path, content] of Object.entries(files)) {
@@ -64,7 +68,7 @@ export const launch = async (options: LaunchOptions): Promise<Editor> => {
     }
   }
   const app = await electron.launch({
-    executablePath: await executable(),
+    executablePath: executable(),
     env,
     args: [
       ...(options.openFolder ? [workspace] : []),

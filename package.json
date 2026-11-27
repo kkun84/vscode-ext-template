@@ -24,7 +24,8 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "mutation": "mutator",
-    "mutation:diff": "sh -c 'if git rev-parse --verify --quiet origin/main >/dev/null 2>&1; then mutator --since origin/main; else echo \"skipping mutation:diff: origin/main not found\"; fi'",
+    "mutation:diff": "node scripts/mutation-diff.ts --skip-without-base",
+    "mutation:selftest": "node scripts/mutation-diff-selftest.ts",
     "build": "node scripts/build.ts",
     "budget": "node scripts/budget.ts",
     "package": "node scripts/package.ts && node scripts/check-vsix.ts",
@@ -40,7 +41,7 @@
   "devDependencies": {
     "@effect/tsgo": "0.67.5",
     "@effect/vitest": "4.1.2",
-    "@mizchi/mutator": "0.2.0",
+    "@mizchi/mutator": "0.4.5",
     "@playwright/test": "1.65.0",
     "@types/node": "24.19.2",
     "@types/vscode": "1.116.0",

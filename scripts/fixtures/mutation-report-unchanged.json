@@ -1,0 +1,39 @@
+{
+  "schemaVersion": "2",
+  "comparison": "available",
+  "findings": [],
+  "thresholds": {
+    "high": 80,
+    "low": 60
+  },
+  "framework": {
+    "name": "mutator",
+    "version": "0.4.5"
+  },
+  "files": {
+    "src/services/create-note.ts": {
+      "language": "typescript",
+      "mutants": [
+        {
+          "id": "187gnveer5p",
+          "mutatorName": "StringLiteral",
+          "replacement": "\"\"",
+          "location": {
+            "start": {
+              "line": 16,
+              "column": 37
+            },
+            "end": {
+              "line": 16,
+              "column": 49
+            }
+          },
+          "status": "Ignored",
+          "killedBy": [],
+          "coveredBy": [],
+          "statusReason": "accepted: equivalent for the result: the Effect.fn name only names the tracing span and the frame in Cause.pretty logs; the success value and the typed failures do not depend on it"
+        }
+      ]
+    }
+  }
+}

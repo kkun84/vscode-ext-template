@@ -6,6 +6,8 @@ import type { ExtensionKind } from "./e2e/vscode.ts"
 export default defineConfig<{ readonly extensionKind: ExtensionKind }>({
   testDir: "e2e",
   testMatch: "**/*.spec.ts",
+  // VS Codeのダウンロードをワーカーごとに行わず、ここで一度だけ行う。
+  globalSetup: "./e2e/global-setup.ts",
   forbidOnly: process.env["CI"] !== undefined,
   retries: 0,
   // エディタの起動に時間がかかるので、1つのテストの上限を長めにする。
